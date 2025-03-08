@@ -1198,5 +1198,4 @@ setInterval(dynamicTrainingControl, 10 * 60 * 1000);
     fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bot đã khởi động\n`);
     startAutoChecking();
     simulateRealTimeForConfigs(1000);
-    setInterval(optimizeModel, 60 * 60 * 1000); // Tối ưu mô hình mỗi giờ
 })();
