@@ -190,7 +190,7 @@ let model;
 
 function createModel(windowSize, units) {
     const model = tf.sequential();
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 24], returnSequences: false }));
+    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 18], returnSequences: false }));
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
@@ -266,11 +266,8 @@ async function trainModelData(data, symbol, pair, timeframe) {
 
             const subData = data.slice(0, i + 1);
             const currentPrice = subData[subData.length - 1].close;
-            // Tính toán giá trị SL và TP
-            const SL = currentPrice * 0.95; // Giả sử SL là 5% dưới giá hiện tại
-            const TP = currentPrice * 1.05; // Giả sử TP là 5% trên giá hiện tại
             const futureData = data.slice(i + 1, i + 11);
-            let trueSignal = [0, 0, 1, currentPrice, SL, TP];
+            let trueSignal = [0, 0, 1];
             if (futureData.length >= 10) {
                 const futurePrice = futureData[futureData.length - 1].close;
                 const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
@@ -302,14 +299,14 @@ async function trainModelWithMultiplePairs() {
     for (const { symbol, pair, timeframe } of pairs) {
         const data = await fetchKlines(symbol, pair, timeframe, 500);
         if (data) {
-            console.log(`Huấn luyện với ${symbol}/${pair} (${timeframe})...`);
             await trainModelData(data, symbol, pair, timeframe);
         } else {
-            console.error(`Không thể lấy dữ liệu ${symbol}/${pair} (${timeframe}) để huấn luyện.`);
+            console.error(`❌ Không thể lấy dữ liệu ${symbol}/${pair} (${timeframe}) để huấn luyện.`);
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 }
+
 // async function optimizeModel() {
 //     if (recentAccuracies.length < 50) return;
 //
@@ -468,11 +465,15 @@ function computeSupportResistance(data) {
 // HÀM CHUẨN HÓA ONE-HOT ENCODING
 // =====================
 
-function encodeOneHot(value, categories) {
-    return categories.map(cat => (cat === value ? 1 : 0));
-}
+let uniqueSymbols = new Set();
+let uniquePairs = new Set();
+let uniqueTimeframes = new Set();
 
-function computeFeature(data, j, symbol, pair,timeframe) {
+function encodeOneHot(value, categorySet) {
+    if (!categorySet.has(value)) categorySet.add(value);
+    return [...categorySet].map(cat => (cat === value ? 1 : 0));
+}
+function computeFeature(data, j, symbol, pair, timeframe) {
     const subData = data.slice(0, j + 1);
     const close = subData.map(d => d.close);
     const volume = subData.map(d => d.volume);
@@ -491,33 +492,38 @@ function computeFeature(data, j, symbol, pair,timeframe) {
     const currentPrice = close[close.length - 1];
     const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
-    // Chuyển đổi symbol, pair & timeframe thành dạng one-hot encoding
-    const symbolEncoding = encodeOneHot(symbol, ['BTC', 'ETH', 'BNB', 'ADA']);
+    // One-hot encoding với danh sách động
+    // One-hot encoding với danh sách động
+    if (!uniqueSymbols.has(symbol)) uniqueSymbols.add(symbol);
+    const symbolEncoding = encodeOneHot(symbol, uniqueSymbols);
+    while (symbolEncoding.length < 3) symbolEncoding.push(0);
+    if (!uniquePairs.has(pair)) uniquePairs.add(pair);
+    const pairEncoding = encodeOneHot(pair, uniquePairs);
+    while (pairEncoding.length < 2) pairEncoding.push(0);
+    if (!uniqueTimeframes.has(timeframe)) uniqueTimeframes.add(timeframe);
+    const timeframeEncoding = encodeOneHot(timeframe, uniqueTimeframes);
+    while (timeframeEncoding.length < 2) timeframeEncoding.push(0);ng = encodeOneHot(timeframe, uniqueTimeframes);
 
-    const pairEncoding = encodeOneHot(pair, ['USDT', 'BTC', 'ETH', 'BNB']);
-    const timeframeEncoding = encodeOneHot(timeframe, ['1m', '5m', '1h']);
+    const safeDivide = (num, denom) => (denom !== 0 ? num / denom : 0);
     const features = [
-        rsi / 100, // Chuẩn hóa RSI về 0-1
-        adx / 100, // Chuẩn hóa ADX về 0-1
-        histogram / Math.max(...close), // Chuẩn hóa histogram MACD
+        rsi / 100,
+        adx / 100,
+        safeDivide(histogram, Math.max(...close)),
         volumeSpike,
-        (ma10 - ma50) / Math.max(...close), // Chuẩn hóa chênh lệch MA
-        (currentPrice - middleBB) / Math.max(...close), // Chuẩn hóa khoảng cách đến BB
-        stochasticK / 100, // Chuẩn hóa Stochastic về 0-1
-        (currentPrice - vwap) / Math.max(...close), // Chuẩn hóa khoảng cách đến VWAP
-        obv / 1e6, // Chia nhỏ OBV
-        ichimoku ? (ichimoku.conversionLine - ichimoku.baseLine) / Math.max(...close) : 0,
-        (currentPrice - fibLevels[0.618]) / Math.max(...close), // Chuẩn hóa khoảng cách đến Fib level
-        symbol, // Thêm loại coin
-        timeframe, // Thêm khung thời gian
-        ...symbolEncoding, // One-hot encoding cho symbol
-        ...pairEncoding, // One-hot encoding cho pair
-        ...timeframeEncoding // One-hot encoding cho timeframe
+        safeDivide(ma10 - ma50, Math.max(...close)),
+        safeDivide(currentPrice - middleBB, Math.max(...close)),
+        stochasticK / 100,
+        safeDivide(currentPrice - vwap, Math.max(...close)),
+        obv / 1e6,
+        ichimoku ? safeDivide(ichimoku.conversionLine - ichimoku.baseLine, Math.max(...close)) : 0,
+        safeDivide(currentPrice - fibLevels[0.618], Math.max(...close)),
+        ...symbolEncoding,
+        ...pairEncoding,
+        ...timeframeEncoding
     ];
-
-    const cleanFeatures = features.map(f => (isNaN(f) || f === undefined ? 0 : f));
-    return cleanFeatures;
+    return features.map(f => (isNaN(f) || f === undefined ? 0 : f));
 }
+
 
 // =====================
 // PHÂN TÍCH CRYPTO (ĐÃ TỐI ƯU)
