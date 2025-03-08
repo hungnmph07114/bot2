@@ -650,13 +650,12 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex} do dữ liệu tương lai không đủ\n`);
         return;
     }
-   if (trainingCounter % 2 !== 0) {
+    trainingCounter++;
+  if (trainingCounter % 2 !== 0) {
         console.log(`Bỏ qua huấn luyện tại nến ${currentIndex} (trainingCounter: ${trainingCounter})`);
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex}\n`);
         return;
     }
-    trainingCounter++;
-
     const memoryUsage = process.memoryUsage();
     const usedMemoryMB = memoryUsage.heapUsed / 1024 / 1024;
     if (usedMemoryMB > 450) {
