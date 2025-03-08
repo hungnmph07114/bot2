@@ -10,8 +10,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@tensorflow/tfjs": "^4.22.0",
     "axios": "^1.8.1",
+    "ccxt": "^4.4.65",
     "fs-extra": "^11.3.0",
     "https-proxy-agent": "^7.0.6",
     "node-telegram-bot-api": "^0.66.0",
