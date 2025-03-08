@@ -190,7 +190,7 @@ let model;
 
 function createModel(windowSize, units) {
     const model = tf.sequential();
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 18], returnSequences: false }));
+    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 20], returnSequences: false }));
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
@@ -465,13 +465,18 @@ function computeSupportResistance(data) {
 // HÀM CHUẨN HÓA ONE-HOT ENCODING
 // =====================
 
-let uniqueSymbols = new Set();
-let uniquePairs = new Set();
-let uniqueTimeframes = new Set();
+const symbolMap = new Map();
+const pairMap = new Map();
+const timeframeMap = new Map();
+const EMBEDDING_SIZE = 3;  // Kích thước embedding cố định cho mỗi danh mục
 
-function encodeOneHot(value, categorySet) {
-    if (!categorySet.has(value)) categorySet.add(value);
-    return [...categorySet].map(cat => (cat === value ? 1 : 0));
+function getEmbedding(value, map) {
+    if (!map.has(value)) {
+        // Tạo embedding ngẫu nhiên khi giá trị mới được thêm vào
+        const embedding = Array.from({ length: EMBEDDING_SIZE }, () => Math.random());
+        map.set(value, embedding);
+    }
+    return map.get(value);
 }
 function computeFeature(data, j, symbol, pair, timeframe) {
     if (!data || !data[j]) {
@@ -496,18 +501,9 @@ function computeFeature(data, j, symbol, pair, timeframe) {
     const currentPrice = close[close.length - 1];
     const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
-    // One-hot encoding với danh sách động
-    // One-hot encoding với danh sách động
-    if (!uniqueSymbols.has(symbol)) uniqueSymbols.add(symbol);
-    const symbolEncoding = encodeOneHot(symbol, uniqueSymbols);
-    while (symbolEncoding.length < 3) symbolEncoding.push(0);
-    if (!uniquePairs.has(pair)) uniquePairs.add(pair);
-    const pairEncoding = encodeOneHot(pair, uniquePairs);
-    while (pairEncoding.length < 2) pairEncoding.push(0);
-    if (!uniqueTimeframes.has(timeframe)) uniqueTimeframes.add(timeframe);
-    const timeframeEncoding = encodeOneHot(timeframe, uniqueTimeframes);
-    while (timeframeEncoding.length < 2) timeframeEncoding.push(0);ng = encodeOneHot(timeframe, uniqueTimeframes);
-
+    const symbolEmbedding = getEmbedding(symbol, symbolMap);
+    const pairEmbedding = getEmbedding(pair, pairMap);
+    const timeframeEmbedding = getEmbedding(timeframe, timeframeMap);
     const safeDivide = (num, denom) => (denom !== 0 ? num / denom : 0);
     const features = [
         rsi / 100,
@@ -521,11 +517,13 @@ function computeFeature(data, j, symbol, pair, timeframe) {
         obv / 1e6,
         ichimoku ? safeDivide(ichimoku.conversionLine - ichimoku.baseLine, Math.max(...close)) : 0,
         safeDivide(currentPrice - fibLevels[0.618], Math.max(...close)),
-        ...symbolEncoding,
-        ...pairEncoding,
-        ...timeframeEncoding
+        ...symbolEmbedding,
+        ...pairEmbedding,
+        ...timeframeEmbedding
     ];
-    return features.map(f => (isNaN(f) || f === undefined ? 0 : f));
+
+    const cleanFeatures = features.map(f => (isNaN(f) || f === undefined ? 0 : f));
+    return cleanFeatures;
 }
 
 
