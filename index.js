@@ -1,5 +1,5 @@
 const sqlite3 = require('sqlite3').verbose();
-const tf = require('@tensorflow/tfjs-node');
+const tf = require('@tensorflow/tfjs');
 const ccxt = require('ccxt');
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');

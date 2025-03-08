@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
     "axios": "^1.8.1",
     "ccxt": "^4.4.65",
     "fs-extra": "^11.3.0",
