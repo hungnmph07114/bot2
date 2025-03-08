@@ -814,7 +814,7 @@ async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, de
 }
 
 async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp, timestamp) {
-    const data = await fetchKlines(symbol, pair, timeframe, 50);
+    const data = await fetchKlines(symbol, pair, timeframe, 300); // Tăng số nến kiểm tra
     if (!data) return { exitPrice: null, profit: null };
 
     let exitPrice = null;
@@ -845,6 +845,15 @@ async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp
                 profit = ((entryPrice - tp) / entryPrice) * 100;
                 break;
             }
+        }
+    }
+
+    // Nếu không chạm TP/SL trong 300 nến -> Đóng lệnh ở giá cuối
+    if (exitPrice === null) {
+        exitPrice = data[data.length - 1].close;
+        profit = ((exitPrice - entryPrice) / entryPrice) * 100;
+        if (signal.includes('SHORT')) {
+            profit = ((entryPrice - exitPrice) / entryPrice) * 100;
         }
     }
 
