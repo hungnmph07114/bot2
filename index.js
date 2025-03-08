@@ -196,47 +196,47 @@ function createModel(windowSize, units) {
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
     return model;
 }
-
-async function initializeModel() {
+async function loadModelManual(modelDir) {
     try {
-        if (fs.existsSync(path.join(MODEL_DIR, 'model.json'))) {
-            model = await tf.loadLayersModel(`file://${MODEL_DIR}`);
-            console.log('✅ Đã tải mô hình từ file.');
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Đã tải mô hình từ ${MODEL_DIR}\n`);
-        } else {
-            model = createModel(currentConfig.windowSize, currentConfig.units);
-            console.log('⚠️ Không tìm thấy mô hình, tạo mới.');
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Tạo mô hình mới\n`);
+        const modelPath = path.join(modelDir, 'model.json');
+        const weightsPath = path.join(modelDir, 'weights.bin');
+
+        // Kiểm tra tệp tồn tại
+        if (!fs.existsSync(modelPath) || !fs.existsSync(weightsPath)) {
+            throw new Error('Không tìm thấy tệp mô hình hoặc trọng số');
         }
+
+        // Tải cấu trúc mô hình từ JSON
+        const modelJson = JSON.parse(fs.readFileSync(modelPath, 'utf8'));
+        const loadedModel = await tf.models.modelFromJSON(modelJson);
+
+        // Tải trọng số từ tệp nhị phân
+        const weightBuffer = fs.readFileSync(weightsPath);
+        const weightData = new Float32Array(weightBuffer.buffer);
+        const weightTensors = [];
+        let offset = 0;
+        for (const layer of loadedModel.layers) {
+            const layerWeights = layer.getWeights();
+            for (let i = 0; i < layerWeights.length; i++) {
+                const shape = layerWeights[i].shape;
+                const size = shape.reduce((a, b) => a * b, 1);
+                const tensorData = weightData.slice(offset, offset + size);
+                weightTensors.push(tf.tensor(tensorData, shape));
+                offset += size;
+            }
+        }
+        loadedModel.setWeights(weightTensors);
+
+        console.log('✅ Đã tải mô hình từ file thủ công.');
+        return loadedModel;
     } catch (error) {
-        console.error('Lỗi khởi tạo mô hình:', error.message);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi khởi tạo mô hình: ${error.message}\n`);
-        model = createModel(currentConfig.windowSize, currentConfig.units);
+        console.error('Lỗi khi tải mô hình:', error.message);
+        throw error;
     }
 }
-
-async function saveModel() {
-    try {
-        if (!fs.existsSync(MODEL_DIR)) {
-            fs.mkdirSync(MODEL_DIR, { recursive: true });
-        }
-
-        // Lưu cấu trúc mô hình dưới dạng JSON
-        const modelJson = model.toJSON();
-        fs.writeFileSync(path.join(MODEL_DIR, 'model.json'), JSON.stringify(modelJson, null, 2));
-
-        // Lưu trọng số dưới dạng nhị phân
-        const weights = model.getWeights();
-        const weightData = await Promise.all(weights.map(w => w.data()));
-        const weightBuffer = Buffer.concat(weightData.map(data => Buffer.from(data.buffer)));
-        fs.writeFileSync(path.join(MODEL_DIR, 'weights.bin'), weightBuffer);
-
-        console.log('✅ Mô hình đã được lưu thủ công.');
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Mô hình đã được lưu thủ công tại ${MODEL_DIR}\n`);
-    } catch (error) {
-        console.error('Lỗi lưu mô hình thủ công:', error.message);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi lưu mô hình thủ công: ${error.message}\n`);
-    }
+async function initializeModel() {
+    model = createModel(currentConfig.windowSize, currentConfig.units);
+    console.log('✅ LSTM model đã được khởi tạo với 11 đặc trưng.');
 }
 
 async function trainModelData(data) {
@@ -266,7 +266,6 @@ async function trainModelData(data) {
         const xs = tf.tensor3d(inputs);
         const ys = tf.tensor2d(outputs);
         await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 16, shuffle: true });
-        await saveModel();
         console.log('✅ Mô hình đã được huấn luyện ban đầu.');
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Mô hình đã được huấn luyện\n`);
         xs.dispose();
@@ -295,65 +294,65 @@ async function trainModelWithMultiplePairs() {
     }
 }
 
-async function optimizeModel() {
-    if (recentAccuracies.length < 50) return;
-
-    const avgAcc = recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length;
-    if (avgAcc > 0.7) return;
-
-    console.log('⚙️ Bắt đầu tối ưu hóa mô hình...');
-    fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bắt đầu tối ưu hóa mô hình\n`);
-
-    const configsToTest = [
-        { windowSize: 5, units: 32, epochs: 10 },
-        { windowSize: 10, units: 64, epochs: 15 },
-        { windowSize: 15, units: 128, epochs:20 }
-    ];
-
-    for (const config of configsToTest) {
-        console.log(`Thử cấu hình: ${JSON.stringify(config)}`);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Thử cấu hình: ${JSON.stringify(config)}\n`);
-
-        currentConfig = { ...config };
-        model = createModel(config.windowSize, config.units);
-
-        const initialData = await fetchKlines('BTC', 'USDT', '1h', 200);
-        if (!initialData) {
-            console.error('❌ Không thể lấy dữ liệu để tối ưu hóa mô hình');
-            continue;
-        }
-        await trainModelData(initialData);
-
-        recentAccuracies = [];
-        const historicalData = await fetchKlines('BTC', 'USDT', '1h', 200);
-        if (historicalData) {
-            for (let i = currentConfig.windowSize; i < Math.min(historicalData.length, 50 + currentConfig.windowSize); i++) {
-                await selfEvaluateAndTrain(historicalData.slice(0, i), i, historicalData);
-            }
-        }
-
-        const newAvgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
-        console.log(`Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%`);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Độ chính xác: ${(newAvgAcc * 100).toFixed(2)}%\n`);
-
-        if (newAvgAcc > bestAccuracy) {
-            bestAccuracy = newAvgAcc;
-            bestConfig = { ...config };
-        }
-    }
-
-    currentConfig = { ...bestConfig };
-    model = createModel(bestConfig.windowSize, bestConfig.units);
-    await saveModel();
-    console.log(`✅ Đã áp dụng cấu hình tốt nhất: ${JSON.stringify(bestConfig)} với độ chính xác: ${(bestAccuracy * 100).toFixed(2)}%`);
-    fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Cấu hình tốt nhất: ${JSON.stringify(bestConfig)}\n`);
-
-    if (adminChatId) {
-        bot.sendMessage(adminChatId, `✅ *Tối ưu hóa mô hình hoàn tất*\nCấu hình tốt nhất: ${JSON.stringify(bestConfig)}\nĐộ chính xác: ${(bestAccuracy * 100).toFixed(2)}\\%`, { parse_mode: 'Markdown' });
-    }
-
-    await trainModelWithMultiplePairs();
-}
+// async function optimizeModel() {
+//     if (recentAccuracies.length < 50) return;
+//
+//     const avgAcc = recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length;
+//     if (avgAcc > 0.7) return;
+//
+//     console.log('⚙️ Bắt đầu tối ưu hóa mô hình...');
+//     fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bắt đầu tối ưu hóa mô hình\n`);
+//
+//     const configsToTest = [
+//         { windowSize: 5, units: 32, epochs: 10 },
+//         { windowSize: 10, units: 64, epochs: 15 },
+//         { windowSize: 15, units: 128, epochs:20 }
+//     ];
+//
+//     for (const config of configsToTest) {
+//         console.log(`Thử cấu hình: ${JSON.stringify(config)}`);
+//         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Thử cấu hình: ${JSON.stringify(config)}\n`);
+//
+//         currentConfig = { ...config };
+//         model = createModel(config.windowSize, config.units);
+//
+//         const initialData = await fetchKlines('BTC', 'USDT', '1h', 200);
+//         if (!initialData) {
+//             console.error('❌ Không thể lấy dữ liệu để tối ưu hóa mô hình');
+//             continue;
+//         }
+//         await trainModelData(initialData);
+//
+//         recentAccuracies = [];
+//         const historicalData = await fetchKlines('BTC', 'USDT', '1h', 200);
+//         if (historicalData) {
+//             for (let i = currentConfig.windowSize; i < Math.min(historicalData.length, 50 + currentConfig.windowSize); i++) {
+//                 await selfEvaluateAndTrain(historicalData.slice(0, i), i, historicalData);
+//             }
+//         }
+//
+//         const newAvgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
+//         console.log(`Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%`);
+//         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Độ chính xác: ${(newAvgAcc * 100).toFixed(2)}%\n`);
+//
+//         if (newAvgAcc > bestAccuracy) {
+//             bestAccuracy = newAvgAcc;
+//             bestConfig = { ...config };
+//         }
+//     }
+//
+//     currentConfig = { ...bestConfig };
+//     model = createModel(bestConfig.windowSize, bestConfig.units);
+//     await saveModel();
+//     console.log(`✅ Đã áp dụng cấu hình tốt nhất: ${JSON.stringify(bestConfig)} với độ chính xác: ${(bestAccuracy * 100).toFixed(2)}%`);
+//     fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Cấu hình tốt nhất: ${JSON.stringify(bestConfig)}\n`);
+//
+//     if (adminChatId) {
+//         bot.sendMessage(adminChatId, `✅ *Tối ưu hóa mô hình hoàn tất*\nCấu hình tốt nhất: ${JSON.stringify(bestConfig)}\nĐộ chính xác: ${(bestAccuracy * 100).toFixed(2)}\\%`, { parse_mode: 'Markdown' });
+//     }
+//
+//     await trainModelWithMultiplePairs();
+// }
 
 // =====================
 // HÀM TÍNH CHỈ BÁO
