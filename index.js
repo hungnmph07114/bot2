@@ -1212,7 +1212,6 @@ setInterval(() => {
     await initializeModel();
     await trainModelWithMultiplePairs();
     console.log('✅ Bot đã khởi động và sẵn sàng nhận lệnh.');
-    fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bot đã khởi động\n`);
     startAutoChecking();
     simulateRealTimeForConfigs(1000);
 })();
