@@ -607,7 +607,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         const leverage = signalText === '🟢 LONG - Mua'
             ? Math.round(longProb * 10)
             : Math.round(shortProb * 10);
-        const safeLeverage = Math.min(leverage, 10); // Giới hạn tối đa x10
+        const safeLeverage = Math.min(leverage, 125);
         details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
     }
 
@@ -650,7 +650,11 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex} do dữ liệu tương lai không đủ\n`);
         return;
     }
-
+   if (trainingCounter % 2 !== 0) {
+        console.log(`Bỏ qua huấn luyện tại nến ${currentIndex} (trainingCounter: ${trainingCounter})`);
+        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex}\n`);
+        return;
+    }
     trainingCounter++;
 
     const memoryUsage = process.memoryUsage();
@@ -660,13 +664,6 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex} do RAM cao: ${usedMemoryMB.toFixed(2)} MB\n`);
         return;
     }
-
-    if (trainingCounter % 2 !== 0) {
-        console.log(`Bỏ qua huấn luyện tại nến ${currentIndex} (trainingCounter: ${trainingCounter})`);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex}\n`);
-        return;
-    }
-
     const futurePrice = futureData[futureData.length - 1].close;
     const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
     let trueSignal = [0, 0, 1]; // WAIT
@@ -725,15 +722,15 @@ function reportModelPerformance() {
     const maxAcc = Math.max(...recentAccuracies);
     const minAcc = Math.min(...recentAccuracies);
     const message = `📊 *Hiệu suất mô hình LSTM*\n`
-        + `Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}\\%\n`
-        + `Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}\\%\n`
-        + `Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}\\%\n`
+        + `Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}\%\n`
+        + `Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}\%\n`
+        + `Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}\%\n`
         + `Số lần huấn luyện: ${trainingCounter}`;
     if (adminChatId) {
         bot.sendMessage(adminChatId, message, { parse_mode: 'Markdown' });
     }
 }
-setInterval(reportModelPerformance, 60 * 60 * 1000); // Báo cáo mỗi giờ
+setInterval(reportModelPerformance, 600 * 60 * 1000); // Báo cáo mỗi giờ
 
 function cleanupMemory() {
     const now = Date.now();
@@ -1199,19 +1196,18 @@ function dynamicTrainingControl() {
         }
     }
 }
-setInterval(dynamicTrainingControl, 10 * 60 * 1000);
-setInterval(() => {
-    console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-    optimizeModel().then(r => console.log(r));
-}, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
-
 // =====================
 // KHỞI ĐỘNG BOT
 // =====================
 (async () => {
     await initializeModel();
     await trainModelWithMultiplePairs();
-    console.log('✅ Bot đã khởi động và sẵn sàng nhận lệnh.');
     startAutoChecking();
     simulateRealTimeForConfigs(1000);
+    setInterval(dynamicTrainingControl, 10 * 60 * 1000);
+    setInterval(() => {
+    console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+    optimizeModel().then(r => console.log(r));
+}, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
+
 })();
