@@ -190,7 +190,7 @@ let model;
 
 function createModel(windowSize, units) {
     const model = tf.sequential();
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 11], returnSequences: false }));
+    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 13], returnSequences: false }));
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
@@ -223,7 +223,7 @@ async function optimizeModel() {
         const historicalData = await fetchKlines('BTC', 'USDT', '1h', 200);
         if (historicalData) {
             for (let i = currentConfig.windowSize; i < Math.min(historicalData.length, 50 + currentConfig.windowSize); i++) {
-                await selfEvaluateAndTrain(historicalData.slice(0, i), i, historicalData);
+                await selfEvaluateAndTrain(historicalData.slice(0, i), i, historicalData,'BTC','1h');
             }
         }
 
@@ -249,24 +249,28 @@ async function optimizeModel() {
 }
 async function initializeModel() {
     model = createModel(currentConfig.windowSize, currentConfig.units);
-    console.log('✅ LSTM model đã được khởi tạo với 11 đặc trưng.');
+    console.log('✅ LSTM model đã được khởi tạo');
 }
 
-async function trainModelData(data) {
+
+async function trainModelData(data, symbol, pair, timeframe) {
     try {
         const inputs = [];
         const outputs = [];
         for (let i = currentConfig.windowSize; i < data.length; i++) {
             const windowFeatures = [];
             for (let j = i - currentConfig.windowSize; j < i; j++) {
-                windowFeatures.push(computeFeature(data, j));
+                windowFeatures.push(computeFeature(data, j, symbol, timeframe));
             }
             inputs.push(windowFeatures);
 
             const subData = data.slice(0, i + 1);
             const currentPrice = subData[subData.length - 1].close;
+            // Tính toán giá trị SL và TP
+            const SL = currentPrice * 0.95; // Giả sử SL là 5% dưới giá hiện tại
+            const TP = currentPrice * 1.05; // Giả sử TP là 5% trên giá hiện tại
             const futureData = data.slice(i + 1, i + 11);
-            let trueSignal = [0, 0, 1];
+            let trueSignal = [0, 0, 1, currentPrice, SL, TP];
             if (futureData.length >= 10) {
                 const futurePrice = futureData[futureData.length - 1].close;
                 const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
@@ -279,13 +283,13 @@ async function trainModelData(data) {
         const xs = tf.tensor3d(inputs);
         const ys = tf.tensor2d(outputs);
         await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 16, shuffle: true });
-        console.log('✅ Mô hình đã được huấn luyện ban đầu.');
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Mô hình đã được huấn luyện\n`);
+        console.log(`✅ Mô hình đã được huấn luyện ban đầu với ${symbol}/${pair} (${timeframe}).`);
+        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Mô hình đã được huấn luyện với ${symbol}/${pair} (${timeframe})\n`);
         xs.dispose();
         ys.dispose();
     } catch (error) {
-        console.error('Lỗi huấn luyện mô hình:', error.message);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi huấn luyện: ${error.message}\n`);
+        console.error(`Lỗi huấn luyện mô hình với ${symbol}/${pair} (${timeframe}):`, error.message);
+        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi huấn luyện với ${symbol}/${pair} (${timeframe}): ${error.message}\n`);
     }
 }
 
@@ -299,14 +303,13 @@ async function trainModelWithMultiplePairs() {
         const data = await fetchKlines(symbol, pair, timeframe, 500);
         if (data) {
             console.log(`Huấn luyện với ${symbol}/${pair} (${timeframe})...`);
-            await trainModelData(data);
+            await trainModelData(data, symbol, pair, timeframe);
         } else {
-            console.error(`Không thể lấy dữ liệu ${symbol}/${pair} để huấn luyện.`);
+            console.error(`Không thể lấy dữ liệu ${symbol}/${pair} (${timeframe}) để huấn luyện.`);
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 }
-
 // async function optimizeModel() {
 //     if (recentAccuracies.length < 50) return;
 //
@@ -462,7 +465,7 @@ function computeSupportResistance(data) {
     return { support: Math.min(...lows), resistance: Math.max(...highs) };
 }
 
-function computeFeature(data, j) {
+function computeFeature(data, j, symbol, timeframe) {
     const subData = data.slice(0, j + 1);
     const close = subData.map(d => d.close);
     const volume = subData.map(d => d.volume);
@@ -493,7 +496,9 @@ function computeFeature(data, j) {
         (currentPrice - vwap) / Math.max(...close), // Chuẩn hóa khoảng cách đến VWAP
         obv / 1e6, // Chia nhỏ OBV
         ichimoku ? (ichimoku.conversionLine - ichimoku.baseLine) / Math.max(...close) : 0,
-        (currentPrice - fibLevels[0.618]) / Math.max(...close) // Chuẩn hóa khoảng cách đến Fib level
+        (currentPrice - fibLevels[0.618]) / Math.max(...close), // Chuẩn hóa khoảng cách đến Fib level
+        symbol, // Thêm loại coin
+        timeframe // Thêm khung thời gian
     ];
 
     const cleanFeatures = features.map(f => (isNaN(f) || f === undefined ? 0 : f));
@@ -510,7 +515,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
 
     const windowFeatures = [];
     for (let i = df.length - currentConfig.windowSize; i < df.length; i++) {
-        windowFeatures.push(computeFeature(df, i));
+        windowFeatures.push(computeFeature(df, i, symbol, timeframe));
     }
 
     const currentPrice = df[df.length - 1].close;
@@ -530,7 +535,6 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     const ichimoku = computeIchimoku(df);
     const fibLevels = computeFibonacciLevels(df);
     const { support, resistance } = computeSupportResistance(df);
-
     const input = tf.tensor3d([windowFeatures]);
     const prediction = model.predict(input);
     const [longProb, shortProb, waitProb] = prediction.dataSync();
@@ -627,7 +631,7 @@ let trainingCounter = 0;
 let trainingLimit = 5000;
 let shouldStopTraining = false;
 
-async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
+async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData,symbol,timeframe) {
     if (!historicalSlice || !fullData || shouldStopTraining || trainingCounter >= trainingLimit) {
         console.log(`🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng (trainingCounter: ${trainingCounter})`);
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Không thể huấn luyện tại nến ${currentIndex}\n`);
@@ -651,7 +655,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
         return;
     }
     trainingCounter++;
-  if (trainingCounter % 2 !== 0) {
+    if (trainingCounter % 2 !== 0) {
         console.log(`Bỏ qua huấn luyện tại nến ${currentIndex} (trainingCounter: ${trainingCounter})`);
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bỏ qua huấn luyện tại nến ${currentIndex}\n`);
         return;
@@ -671,7 +675,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData) {
 
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
-        windowFeatures.push(computeFeature(historicalSlice, i));
+        windowFeatures.push(computeFeature(historicalSlice, i,symbol, timeframe));
     }
 
     const hasNaN = windowFeatures.some(features => features.some(f => isNaN(f)));
@@ -877,7 +881,7 @@ async function simulateConfig(config, stepInterval) {
                     [chatId, symbol, pair, timeframe, signalText, confidence, now, entryPrice, exitPrice, profit]);
                 console.log(`✅ Gửi tín hiệu giả lập ${symbol}/${pair} cho chat ${chatId} (Độ tin: ${confidence}%)`);
             }
-            if (!shouldStopTraining) await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData);
+            if (!shouldStopTraining) await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData,symbol,timeframe);
             lastIndexMap.set(configKey, currentIndex + 1);
             currentIndex++;
             setTimeout(simulateStep, stepInterval);
@@ -1205,8 +1209,8 @@ function dynamicTrainingControl() {
     simulateRealTimeForConfigs(1000);
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
     setInterval(() => {
-    console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-    optimizeModel().then(r => console.log(r));
-}, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
+        console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+        optimizeModel().then(r => console.log(r));
+    }, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
 
 })();
