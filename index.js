@@ -190,7 +190,7 @@ let model;
 
 function createModel(windowSize, units) {
     const model = tf.sequential();
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 13], returnSequences: false }));
+    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 24], returnSequences: false }));
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
@@ -260,7 +260,7 @@ async function trainModelData(data, symbol, pair, timeframe) {
         for (let i = currentConfig.windowSize; i < data.length; i++) {
             const windowFeatures = [];
             for (let j = i - currentConfig.windowSize; j < i; j++) {
-                windowFeatures.push(computeFeature(data, j, symbol, timeframe));
+                windowFeatures.push(computeFeature(data, j, symbol,pair, timeframe));
             }
             inputs.push(windowFeatures);
 
@@ -464,8 +464,15 @@ function computeSupportResistance(data) {
     const lows = data.map(d => d.low);
     return { support: Math.min(...lows), resistance: Math.max(...highs) };
 }
+// =====================
+// HÀM CHUẨN HÓA ONE-HOT ENCODING
+// =====================
 
-function computeFeature(data, j, symbol, timeframe) {
+function encodeOneHot(value, categories) {
+    return categories.map(cat => (cat === value ? 1 : 0));
+}
+
+function computeFeature(data, j, symbol, pair,timeframe) {
     const subData = data.slice(0, j + 1);
     const close = subData.map(d => d.close);
     const volume = subData.map(d => d.volume);
@@ -484,7 +491,11 @@ function computeFeature(data, j, symbol, timeframe) {
     const currentPrice = close[close.length - 1];
     const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
+    // Chuyển đổi symbol, pair & timeframe thành dạng one-hot encoding
+    const symbolEncoding = encodeOneHot(symbol, ['BTC', 'ETH', 'BNB', 'ADA']);
 
+    const pairEncoding = encodeOneHot(pair, ['USDT', 'BTC', 'ETH', 'BNB']);
+    const timeframeEncoding = encodeOneHot(timeframe, ['1m', '5m', '1h']);
     const features = [
         rsi / 100, // Chuẩn hóa RSI về 0-1
         adx / 100, // Chuẩn hóa ADX về 0-1
@@ -498,7 +509,10 @@ function computeFeature(data, j, symbol, timeframe) {
         ichimoku ? (ichimoku.conversionLine - ichimoku.baseLine) / Math.max(...close) : 0,
         (currentPrice - fibLevels[0.618]) / Math.max(...close), // Chuẩn hóa khoảng cách đến Fib level
         symbol, // Thêm loại coin
-        timeframe // Thêm khung thời gian
+        timeframe, // Thêm khung thời gian
+        ...symbolEncoding, // One-hot encoding cho symbol
+        ...pairEncoding, // One-hot encoding cho pair
+        ...timeframeEncoding // One-hot encoding cho timeframe
     ];
 
     const cleanFeatures = features.map(f => (isNaN(f) || f === undefined ? 0 : f));
@@ -631,7 +645,7 @@ let trainingCounter = 0;
 let trainingLimit = 5000;
 let shouldStopTraining = false;
 
-async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData,symbol,timeframe) {
+async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData,symbol,pair,timeframe) {
     if (!historicalSlice || !fullData || shouldStopTraining || trainingCounter >= trainingLimit) {
         console.log(`🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng (trainingCounter: ${trainingCounter})`);
         fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Không thể huấn luyện tại nến ${currentIndex}\n`);
@@ -675,7 +689,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData,symb
 
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
-        windowFeatures.push(computeFeature(historicalSlice, i,symbol, timeframe));
+        windowFeatures.push(computeFeature(historicalSlice, i,symbol,pair, timeframe));
     }
 
     const hasNaN = windowFeatures.some(features => features.some(f => isNaN(f)));
