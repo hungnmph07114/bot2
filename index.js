@@ -196,42 +196,55 @@ function createModel(windowSize, units) {
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
     return model;
 }
-async function loadModelManual(modelDir) {
-    try {
-        const modelPath = path.join(modelDir, 'model.json');
-        const weightsPath = path.join(modelDir, 'weights.bin');
+async function optimizeModel() {
+    if (recentAccuracies.length < 50) return;
 
-        // Kiểm tra tệp tồn tại
-        if (!fs.existsSync(modelPath) || !fs.existsSync(weightsPath)) {
-            throw new Error('Không tìm thấy tệp mô hình hoặc trọng số');
-        }
+    const avgAcc = recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length;
+    if (avgAcc > 0.7) return;
 
-        // Tải cấu trúc mô hình từ JSON
-        const modelJson = JSON.parse(fs.readFileSync(modelPath, 'utf8'));
-        const loadedModel = await tf.models.modelFromJSON(modelJson);
+    console.log('⚙️ Bắt đầu tối ưu hóa mô hình...');
+    fs.appendFileSync('bot.log', `${new Date().toISOString()} - Bắt đầu tối ưu hóa mô hình...
+`);
 
-        // Tải trọng số từ tệp nhị phân
-        const weightBuffer = fs.readFileSync(weightsPath);
-        const weightData = new Float32Array(weightBuffer.buffer);
-        const weightTensors = [];
-        let offset = 0;
-        for (const layer of loadedModel.layers) {
-            const layerWeights = layer.getWeights();
-            for (let i = 0; i < layerWeights.length; i++) {
-                const shape = layerWeights[i].shape;
-                const size = shape.reduce((a, b) => a * b, 1);
-                const tensorData = weightData.slice(offset, offset + size);
-                weightTensors.push(tf.tensor(tensorData, shape));
-                offset += size;
+    const configsToTest = [
+        { windowSize: 5, units: 32, epochs: 10 },
+        { windowSize: 10, units: 64, epochs: 15 },
+        { windowSize: 15, units: 128, epochs: 20 }
+    ];
+
+    for (const config of configsToTest) {
+        console.log(`Thử cấu hình: ${JSON.stringify(config)}`);
+        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Thử cấu hình: ${JSON.stringify(config)}
+`);
+
+        currentConfig = { ...config };
+
+        recentAccuracies = [];
+        const historicalData = await fetchKlines('BTC', 'USDT', '1h', 200);
+        if (historicalData) {
+            for (let i = currentConfig.windowSize; i < Math.min(historicalData.length, 50 + currentConfig.windowSize); i++) {
+                await selfEvaluateAndTrain(historicalData.slice(0, i), i, historicalData);
             }
         }
-        loadedModel.setWeights(weightTensors);
 
-        console.log('✅ Đã tải mô hình từ file thủ công.');
-        return loadedModel;
-    } catch (error) {
-        console.error('Lỗi khi tải mô hình:', error.message);
-        throw error;
+        const newAvgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
+        console.log(`Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%`);
+        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%
+`);
+
+        if (newAvgAcc > bestAccuracy) {
+            bestAccuracy = newAvgAcc;
+            bestConfig = { ...config };
+        }
+    }
+
+    if (bestConfig) {
+        Object.assign(currentConfig, bestConfig);
+        console.log(`✅ Đã cập nhật tham số mô hình: ${JSON.stringify(currentConfig)}`);
+        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Đã cập nhật tham số mô hình: ${JSON.stringify(currentConfig)}
+`);
+    } else {
+        console.log("⚠️ Không tìm thấy cấu hình tối ưu nào, giữ nguyên tham số hiện tại.");
     }
 }
 async function initializeModel() {
@@ -1187,6 +1200,10 @@ function dynamicTrainingControl() {
     }
 }
 setInterval(dynamicTrainingControl, 10 * 60 * 1000);
+setInterval(() => {
+    console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+    optimizeModel().then(r => console.log(r));
+}, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
 
 // =====================
 // KHỞI ĐỘNG BOT
