@@ -39,7 +39,7 @@ function normalizeTimeframe(tfInput) {
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// Đường dẫn file tương thích cả cục bộ và Railway
+// Đường dẫn file
 const BOT_DB_PATH = path.join(__dirname, 'bot.db');
 const BOT_LOG_PATH = path.join(__dirname, 'bot.log');
 const MODEL_DIR = path.join(__dirname, 'model');
@@ -75,30 +75,32 @@ db.serialize(() => {
             timeframe TEXT NOT NULL,
             PRIMARY KEY (chatId, symbol, pair, timeframe)
         )`, (err) => {
-        if (err) {
-            console.error('Lỗi tạo bảng watch_configs:', err.message);
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi tạo bảng watch_configs: ${err.message}\n`);
-        }
+        if (err) console.error('Lỗi tạo bảng watch_configs:', err.message);
     });
 
     db.run(`
         CREATE TABLE IF NOT EXISTS signal_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chatId INTEGER,
-            symbol TEXT,
-            pair TEXT,
-            timeframe TEXT,
-            signal TEXT,
-            confidence INTEGER,
-            timestamp INTEGER,
-            entry_price REAL,
+            chatId INTEGER NOT NULL,
+            symbol TEXT NOT NULL,
+            pair TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            entry_price REAL NOT NULL,
             exit_price REAL,
             profit REAL
         )`, (err) => {
-        if (err) {
-            console.error('Lỗi tạo bảng signal_history:', err.message);
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi tạo bảng signal_history: ${err.message}\n`);
-        }
+        if (err) console.error('Lỗi tạo bảng signal_history:', err.message);
+    });
+
+    // Thêm chỉ mục cho cột chatId và timestamp
+    db.run(`CREATE INDEX IF NOT EXISTS idx_signal_history_chatId ON signal_history (chatId)`, (err) => {
+        if (err) console.error('Lỗi tạo chỉ mục idx_signal_history_chatId:', err.message);
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_signal_history_timestamp ON signal_history (timestamp)`, (err) => {
+        if (err) console.error('Lỗi tạo chỉ mục idx_signal_history_timestamp:', err.message);
     });
 
     db.run(`
@@ -106,10 +108,7 @@ db.serialize(() => {
             chatId INTEGER PRIMARY KEY,
             showTechnicalIndicators INTEGER DEFAULT 0
         )`, (err) => {
-        if (err) {
-            console.error('Lỗi tạo bảng user_settings:', err.message);
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi tạo bảng user_settings: ${err.message}\n`);
-        }
+        if (err) console.error('Lỗi tạo bảng user_settings:', err.message);
     });
 });
 
@@ -164,7 +163,6 @@ function setUserSettings(chatId, showTechnicalIndicators) {
     );
 }
 
-
 // =====================
 // CẤU HÌNH LSTM
 // =====================
@@ -196,7 +194,7 @@ async function optimizeModel() {
     if (avgAcc > 0.7) return;
 
     console.log('⚙️ Bắt đầu tối ưu hóa mô hình...');
-    fs.appendFileSync('bot.log', `${new Date().toISOString()} - Bắt đầu tối ưu hóa mô hình...\n`);
+    fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Bắt đầu tối ưu hóa mô hình...\n`);
 
     const configsToTest = [
         { windowSize: 5, units: 32, epochs: 10 },
@@ -206,10 +204,7 @@ async function optimizeModel() {
 
     for (const config of configsToTest) {
         console.log(`Thử cấu hình: ${JSON.stringify(config)}`);
-        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Thử cấu hình: ${JSON.stringify(config)}\n`);
-
         currentConfig = { ...config };
-
         recentAccuracies = [];
         const historicalData = await fetchKlines('BTC', 'USDT', '1h', 200);
         if (historicalData) {
@@ -220,7 +215,6 @@ async function optimizeModel() {
 
         const newAvgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
         console.log(`Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%`);
-        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Độ chính xác trung bình với cấu hình ${JSON.stringify(config)}: ${(newAvgAcc * 100).toFixed(2)}%\n`);
 
         if (newAvgAcc > bestAccuracy) {
             bestAccuracy = newAvgAcc;
@@ -231,7 +225,6 @@ async function optimizeModel() {
     if (bestConfig) {
         Object.assign(currentConfig, bestConfig);
         console.log(`✅ Đã cập nhật tham số mô hình: ${JSON.stringify(currentConfig)}`);
-        fs.appendFileSync('bot.log', `${new Date().toISOString()} - Đã cập nhật tham số mô hình: ${JSON.stringify(currentConfig)}\n`);
     } else {
         console.log("⚠️ Không tìm thấy cấu hình tối ưu nào, giữ nguyên tham số hiện tại.");
     }
@@ -256,7 +249,7 @@ async function trainModelData(data, symbol, pair, timeframe) {
             const subData = data.slice(0, i + 1);
             const currentPrice = subData[subData.length - 1].close;
             const futureData = data.slice(i + 1, i + 11);
-            let trueSignal = [0, 0, 1];
+            let trueSignal = [0, 0, 1]; // WAIT
             if (futureData.length >= 10) {
                 const futurePrice = futureData[futureData.length - 1].close;
                 const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
@@ -268,14 +261,12 @@ async function trainModelData(data, symbol, pair, timeframe) {
         if (inputs.length === 0) return;
         const xs = tf.tensor3d(inputs);
         const ys = tf.tensor2d(outputs);
-        await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 16, shuffle: true });
+        await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 32, shuffle: true });
         console.log(`✅ Mô hình đã được huấn luyện ban đầu với ${symbol}/${pair} (${timeframe}).`);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Mô hình đã được huấn luyện với ${symbol}/${pair} (${timeframe})\n`);
         xs.dispose();
         ys.dispose();
     } catch (error) {
         console.error(`Lỗi huấn luyện mô hình với ${symbol}/${pair} (${timeframe}):`, error.message);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi huấn luyện với ${symbol}/${pair} (${timeframe}): ${error.message}\n`);
     }
 }
 
@@ -394,15 +385,13 @@ function computeSupportResistance(data) {
 // =====================
 // HÀM CHUẨN HÓA ONE-HOT ENCODING
 // =====================
-
 const symbolMap = new Map();
 const pairMap = new Map();
 const timeframeMap = new Map();
-const EMBEDDING_SIZE = 3;  // Kích thước embedding cố định cho mỗi danh mục
+const EMBEDDING_SIZE = 3;
 
 function getEmbedding(value, map) {
     if (!map.has(value)) {
-        // Tạo embedding ngẫu nhiên khi giá trị mới được thêm vào
         const embedding = Array.from({ length: EMBEDDING_SIZE }, () => Math.random());
         map.set(value, embedding);
     }
@@ -412,7 +401,7 @@ function getEmbedding(value, map) {
 function computeFeature(data, j, symbol, pair, timeframe) {
     if (!data || !data[j]) {
         console.error(`⚠️ computeFeature: Thiếu dữ liệu cho ${symbol}/${pair} (${timeframe}) tại index ${j}`);
-        return Array(18).fill(0);
+        return Array(20).fill(0);
     }
     const subData = data.slice(0, j + 1);
     const close = subData.map(d => d.close);
@@ -458,9 +447,8 @@ function computeFeature(data, j, symbol, pair, timeframe) {
 }
 
 // =====================
-// PHÂN TÍCH CRYPTO (ĐÃ TỐI ƯU)
+// PHÂN TÍCH CRYPTO
 // =====================
-
 async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThresholds = {}) {
     const df = await fetchKlines(symbol, pair, timeframe);
     if (!df || df.length < currentConfig.windowSize) return { result: '❗ Không thể lấy dữ liệu', confidence: 0 };
@@ -480,7 +468,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     const [macd, signal, histogram] = computeMACD(closePrices);
     const [upperBB, middleBB, lowerBB] = computeBollingerBands(closePrices);
     let atr = computeATR(df);
-    if (atr <= 0) atr = 0.0001; // Đảm bảo ATR luôn dương
+    if (atr <= 0) atr = 0.0001;
     const stochasticK = computeStochastic(df);
     const vwap = computeVWAP(df);
     const obv = computeOBV(df);
@@ -493,8 +481,8 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     input.dispose();
     prediction.dispose();
 
-    let signalType = 'WAIT'; // Tín hiệu cơ bản
-    let signalText = '⚪️ ĐỢI - Chưa có tín hiệu'; // Tín hiệu hiển thị cho người dùng
+    let signalType = 'WAIT';
+    let signalText = '⚪️ ĐỢI - Chưa có tín hiệu';
     let confidence, entry = currentPrice, sl = 0, tp = 0;
     const maxProb = Math.max(longProb, shortProb, waitProb);
     confidence = Math.round(maxProb * 100);
@@ -502,8 +490,8 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     if (maxProb === longProb) {
         signalType = 'LONG';
         signalText = '🟢 LONG - Mua';
-        const slMultiplier = 3 - longProb * 2; // SL từ 1-3x ATR
-        const tpMultiplier = 2 + longProb * 4; // TP từ 2-6x ATR
+        const slMultiplier = 3 - longProb * 2;
+        const tpMultiplier = 2 + longProb * 4;
         sl = Math.max(currentPrice - atr * slMultiplier, support);
         tp = Math.min(currentPrice + atr * tpMultiplier, resistance);
         if (sl >= entry) sl = Math.max(entry - atr * 0.5, support);
@@ -511,8 +499,8 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     } else if (maxProb === shortProb) {
         signalType = 'SHORT';
         signalText = '🔴 SHORT - Bán';
-        const slMultiplier = 3 - shortProb * 2; // SL từ 1-3x ATR
-        const tpMultiplier = 2 + shortProb * 4; // TP từ 2-6x ATR
+        const slMultiplier = 3 - shortProb * 2;
+        const tpMultiplier = 2 + shortProb * 4;
         sl = Math.min(currentPrice + atr * slMultiplier, resistance);
         tp = Math.max(currentPrice - atr * tpMultiplier, support);
         if (sl <= entry) sl = Math.min(entry + atr * 0.5, resistance);
@@ -530,7 +518,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         const isAboveCloud = ichimoku && currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB);
         const isBelowCloud = ichimoku && currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB);
         details.push(`☁️ Ichimoku: ${isAboveCloud ? 'Trên đám mây' : isBelowCloud ? 'Dưới đám mây' : 'Trong đám mây'}`);
-        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
+        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}`);
     }
     details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
     details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
@@ -561,9 +549,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
         details.push(`🛑 SL: ${sl.toFixed(4)}`);
         details.push(`💰 TP: ${tp.toFixed(4)}`);
-        const leverage = signalType === 'LONG'
-            ? Math.round(longProb * 10)
-            : Math.round(shortProb * 10);
+        const leverage = signalType === 'LONG' ? Math.round(longProb * 10) : Math.round(shortProb * 10);
         const safeLeverage = Math.min(leverage, 125);
         details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
     }
@@ -581,60 +567,59 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
 // =====================
 let enableSimulation = true;
 let trainingCounter = 0;
-let trainingLimit = 5000;
 let shouldStopTraining = false;
 
 async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, symbol, pair, timeframe) {
-    if (!historicalSlice || !fullData || shouldStopTraining || trainingCounter >= trainingLimit) {
-        console.log(`🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng.`);
+    console.log(`Training check - shouldStopTraining: ${shouldStopTraining}, trainingCounter: ${trainingCounter}, Data length: ${historicalSlice?.length || 'null'}`);
+
+    if (!historicalSlice) {
+        console.log("🚫 Không thể huấn luyện: historicalSlice không hợp lệ.");
         return;
     }
-
-    if (historicalSlice.length < currentConfig.windowSize || currentIndex + 11 > fullData.length) {
-        console.log(`🚫 Dữ liệu không đủ (${historicalSlice.length}/${currentConfig.windowSize}), bỏ qua huấn luyện.`);
+    if (!fullData) {
+        console.log("🚫 Không thể huấn luyện: fullData không hợp lệ.");
         return;
     }
-
-    // Giới hạn số lần huấn luyện dựa trên accuracy
-    const avgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
-    if (avgAcc > 90 && trainingCounter % 10 !== 0) return;
-    if (avgAcc > 85 && trainingCounter % 5 !== 0) return;
-    if (avgAcc > 70 && trainingCounter % 2 !== 0) return;
-
-    // Giới hạn RAM
-    const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
-    if (usedMemoryMB > 500) {
-        console.log(`🚨 RAM cao: ${usedMemoryMB.toFixed(2)}MB - bỏ qua huấn luyện.`);
+    if (shouldStopTraining) {
+        console.log("🚫 Không thể huấn luyện: Huấn luyện đã bị dừng (shouldStopTraining = true).");
+        return;
+    }
+    if (historicalSlice.length < currentConfig.windowSize) {
+        console.log(`🚫 Không thể huấn luyện: Số lượng dữ liệu (${historicalSlice.length}) nhỏ hơn windowSize (${currentConfig.windowSize}).`);
+        return;
+    }
+    if (currentIndex + 11 > fullData.length) {
+        console.log(`🚫 Không thể huấn luyện: Không đủ dữ liệu cho phần dự đoán (currentIndex: ${currentIndex}, fullData.length: ${fullData.length}).`);
         return;
     }
 
     const currentPrice = historicalSlice[historicalSlice.length - 1].close;
     const futureData = fullData.slice(currentIndex + 1, currentIndex + 11);
     const futurePrice = futureData.length >= 10 ? futureData[futureData.length - 1].close : null;
-    if (!futurePrice) return;
+    if (!futurePrice) {
+        console.log("🚫 Không thể huấn luyện: Không có dữ liệu giá tương lai đủ để tính toán.");
+        return;
+    }
 
-    // Xác định tín hiệu thực tế
     const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
     let trueSignal = [0, 0, 1]; // WAIT
     if (priceChange > 0.5) trueSignal = [1, 0, 0]; // LONG
     else if (priceChange < -0.5) trueSignal = [0, 1, 0]; // SHORT
 
-    // Tạo đặc trưng đầu vào
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
         windowFeatures.push(computeFeature(historicalSlice, i, symbol, pair, timeframe));
     }
-
-    // Kiểm tra NaN
     if (windowFeatures.some(f => f.some(v => isNaN(v)))) {
         console.error(`🚫 Dữ liệu chứa NaN, bỏ qua huấn luyện.`);
         return;
     }
- trainingCounter++
-    try {
-        // Tự động giảm batchSize nếu RAM cao
-        let batchSize = usedMemoryMB > 450 ? 8 : 16;
 
+    trainingCounter++;  // Vẫn giữ trainingCounter để theo dõi, nhưng không giới hạn
+
+    try {
+        const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
+        const batchSize = usedMemoryMB > 450 ? 8 : 16;
         const xs = tf.tensor3d([windowFeatures]);
         const ys = tf.tensor2d([trueSignal]);
         const history = await model.fit(xs, ys, { epochs: 1, batchSize, shuffle: true });
@@ -647,40 +632,28 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         if (recentAccuracies.length > 50) recentAccuracies.shift();
 
         console.log(`✅ Huấn luyện tại nến ${currentIndex} | RAM: ${usedMemoryMB.toFixed(2)} MB | Loss: ${loss.toFixed(4)} | Accuracy: ${(lastAccuracy * 100).toFixed(2)}%`);
-
-        // Dừng giả lập nếu mô hình đã ổn định
-        if (recentAccuracies.length >= 50) {
-            const maxAcc = Math.max(...recentAccuracies);
-            const minAcc = Math.min(...recentAccuracies);
-            if (avgAcc > 0.95 && (maxAcc - minAcc) < 0.05) {
-                enableSimulation = false;
-                console.log(`✅ Mô hình đã ổn định, dừng giả lập.`);
-                if (adminChatId) {
-                    bot.sendMessage(adminChatId, `✅ *Mô hình đã ổn định*\nLoss: ${(1.0 - avgAcc).toFixed(4)}\nAccuracy: ${(avgAcc * 100).toFixed(2)}%`, { parse_mode: 'Markdown' });
-                }
-            }
-        }
     } catch (error) {
         console.error(`❌ Lỗi huấn luyện: ${error.message}`);
     }
 }
 
-// Thông báo hiệu suất mô hình
+
+// Báo cáo hiệu suất mô hình
 function reportModelPerformance() {
     if (recentAccuracies.length < 50) return;
     const avgAcc = recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length;
     const maxAcc = Math.max(...recentAccuracies);
     const minAcc = Math.min(...recentAccuracies);
     const message = `📊 *Hiệu suất mô hình LSTM*\n`
-        + `Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}\%\n`
-        + `Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}\%\n`
-        + `Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}\%\n`
+        + `Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}%\n`
+        + `Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}%\n`
+        + `Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}%\n`
         + `Số lần huấn luyện: ${trainingCounter}`;
     if (adminChatId) {
         bot.sendMessage(adminChatId, message, { parse_mode: 'Markdown' });
     }
 }
-setInterval(reportModelPerformance, 600 * 60 * 1000); // Báo cáo mỗi giờ
+setInterval(reportModelPerformance, 60 * 60 * 1000); // Báo cáo mỗi giờ
 
 function cleanupMemory() {
     const now = Date.now();
@@ -723,9 +696,7 @@ async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, de
             const filteredKlines = klines.filter(k =>
                 k.close > 0 && k.open > 0 && k.high > 0 && k.low > 0 && k.volume >= 0
             );
-            if (filteredKlines.length < limit / 2) {
-                throw new Error(`Dữ liệu hợp lệ quá ít (${filteredKlines.length}/${limit})`);
-            }
+            console.log(`Fetched ${filteredKlines.length} klines for ${symbol}/${pair} (${timeframe})`);
             return filteredKlines;
         } catch (error) {
             let errorMessage = error.message;
@@ -782,10 +753,7 @@ async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp
 
     if (exitPrice === null) {
         exitPrice = data[data.length - 1].close;
-        profit = ((exitPrice - entryPrice) / entryPrice) * 100;
-        if (signal === 'SHORT') {
-            profit = ((entryPrice - exitPrice) / entryPrice) * 100;
-        }
+        profit = signal === 'LONG' ? ((exitPrice - entryPrice) / entryPrice) * 100 : ((entryPrice - exitPrice) / entryPrice) * 100;
     }
 
     return { exitPrice, profit };
@@ -823,6 +791,7 @@ async function simulateConfig(config, stepInterval) {
             return;
         }
         try {
+            console.log(`Simulate step - Index: ${currentIndex}, Data length: ${historicalData.length}`);
             const historicalSlice = historicalData.slice(0, currentIndex);
             if (historicalSlice.length < currentConfig.windowSize) {
                 currentIndex++;
@@ -831,23 +800,12 @@ async function simulateConfig(config, stepInterval) {
             }
             const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
             const now = Date.now();
-            if (confidence >= 80 && (!signalBuffer.has(configKey) || (now - signalBuffer.get(configKey).timestamp > SIGNAL_COOLDOWN))) {
-                bot.sendMessage(chatId, `🚨 *TÍN HIỆU GIẢ LẬP ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})* 🚨\n${result}`, { parse_mode: 'Markdown' });
-                signalBuffer.set(configKey, { result, signalText, timestamp: now, entryPrice });
-
-                const { exitPrice, profit } = await simulateTrade(symbol, pair, timeframe, signalType, entryPrice, sl, tp, now);
-
-                db.run(`INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [chatId, symbol, pair, timeframe, signalText, confidence, now, entryPrice, exitPrice, profit]);
-                console.log(`✅ Gửi tín hiệu giả lập ${symbol}/${pair} cho chat ${chatId} (Độ tin: ${confidence}%)`);
-            }
             if (!shouldStopTraining) await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData, symbol, pair, timeframe);
             lastIndexMap.set(configKey, currentIndex + 1);
             currentIndex++;
             setTimeout(simulateStep, stepInterval);
         } catch (error) {
             console.error(`Lỗi giả lập ${symbol}/${pair}: ${error.message}`);
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi giả lập ${symbol}/${pair}: ${error.message}\n`);
             setTimeout(simulateStep, 30000);
         }
     }
@@ -979,7 +937,7 @@ bot.onText(/\/lichsu/, (msg) => {
             if (!rows || rows.length === 0) return bot.sendMessage(chatId, 'ℹ️ Chưa có lịch sử tín hiệu nào.');
             const historyText = rows.map(row => {
                 const date = new Date(row.timestamp).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-                return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal} (${row.confidence}\%) - ${date}`;
+                return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal} (${row.confidence}%) - ${date}`;
             }).join('\n');
             bot.sendMessage(chatId, `📜 *LỊCH SỬ TÍN HIỆU (10 gần nhất)*\n${historyText}`, { parse_mode: 'Markdown' });
         }
@@ -1003,7 +961,7 @@ bot.onText(/\/tradehistory/, (msg) => {
 
             const historyText = rows.map(row => {
                 const date = new Date(row.timestamp).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-                const profitText = row.profit !== null ? `${row.profit.toFixed(2)}\\%` : 'Đang chờ';
+                const profitText = row.profit !== null ? `${row.profit.toFixed(2)}%` : 'Đang chờ';
                 return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal}\n- Entry: ${row.entry_price.toFixed(4)}, Exit: ${row.exit_price ? row.exit_price.toFixed(4) : 'N/A'}, Profit: ${profitText}\n- ${date}`;
             }).join('\n\n');
             bot.sendMessage(chatId, `📜 *LỊCH SỬ GIAO DỊCH GIẢ LẬP (10 gần nhất)*\n\n${historyText}`, { parse_mode: 'Markdown' });
@@ -1011,76 +969,20 @@ bot.onText(/\/tradehistory/, (msg) => {
     );
 });
 
-bot.onText(/\/status/, (msg) => {
-    try {
-        const chatId = msg.chat.id;
-        const memoryUsage = process.memoryUsage();
-        const usedMemoryMB = memoryUsage.heapUsed / 1024 / 1024;
 
-        if (!recentAccuracies || !trainingCounter || typeof enableSimulation === 'undefined' || !currentConfig) {
-            throw new Error('Biến cần thiết chưa được định nghĩa.');
-        }
-
-        if (!Array.isArray(recentAccuracies)) recentAccuracies = [];
-        if (!currentConfig || typeof currentConfig.windowSize === 'undefined' || typeof currentConfig.units === 'undefined' || typeof currentConfig.epochs === 'undefined') {
-            throw new Error('Cấu hình mô hình chưa hợp lệ.');
-        }
-
-        const avgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
-        const maxAcc = recentAccuracies.length > 0 ? Math.max(...recentAccuracies) : 0;
-        const minAcc = recentAccuracies.length > 0 ? Math.min(...recentAccuracies) : 0;
-
-        const statusMessage = `
-📊 *Trạng thái Bot*
-- Số lần huấn luyện: ${trainingCounter}
-- Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}\%
-- Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}\%
-- Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}\%
-- RAM: ${usedMemoryMB.toFixed(2)} MB
-- Giả lập: ${enableSimulation ? 'Đang chạy' : 'Đã dừng'}
-- Cấu hình mô hình: WINDOW_SIZE=${currentConfig.windowSize}, Units=${currentConfig.units}, Epochs=${currentConfig.epochs}
-        `.trim();
-
-        console.log(`Gửi statusMessage: ${statusMessage}`);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Gửi statusMessage: ${statusMessage}\n`);
-        bot.sendMessage(chatId, statusMessage, { parse_mode: 'HTML' });
-    } catch (error) {
-        console.error('Chi tiết lỗi:', error);
-        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi: ${error.stack}\n`);
-        bot.sendMessage(msg.chat.id, `❌ Lỗi trạng thái: ${error.message}`);
-    }
-});
 
 bot.onText(/\/trogiup/, (msg) => {
     const helpMessage = `
 📚 *HƯỚNG DẪN SỬ DỤNG BOT GIAO DỊCH*
-
-1. **?symbol,pair,timeframe**
-   - Phân tích thủ công.
-   - Ví dụ: ?ada,usdt,5m
-
-2. **/tinhieu symbol,pair,timeframe**
-   - Bật theo dõi tự động.
-   - Ví dụ: /tinhieu ada,usdt,5m
-
-3. **/dungtinhieu symbol,pair,timeframe**
-   - Dừng theo dõi tự động.
-   - Ví dụ: /dungtinhieu ada,usdt,5m
-
-4. **/lichsu**
-   - Xem 10 tín hiệu gần nhất.
-
-5. **/tradehistory**
-   - Xem 10 giao dịch giả lập gần nhất.
-
-6. **/status**
-   - Xem trạng thái bot (huấn luyện, độ chính xác, RAM).
-
-7. **/showindicators** và **/hideindicators**
-   - Bật/tắt hiển thị chỉ số kỹ thuật (RSI, Stochastic, v.v.).
-
-8. **/trogiup**
-   - Hiển thị hướng dẫn này.
+1. **?symbol,pair,timeframe** - Phân tích thủ công. Ví dụ: ?ada,usdt,5m
+2. **/tinhieu symbol,pair,timeframe** - Bật theo dõi tự động. Ví dụ: /tinhieu ada,usdt,5m
+3. **/dungtinhieu symbol,pair,timeframe** - Dừng theo dõi tự động. Ví dụ: /dungtinhieu ada,usdt,5m
+4. **/lichsu** - Xem 10 tín hiệu gần nhất.
+5. **/tradehistory** - Xem 10 giao dịch giả lập gần nhất.
+6. **/status** - Xem trạng thái bot.
+7. **/showindicators** và **/hideindicators** - Bật/tắt chỉ số kỹ thuật.
+8. **/resettraining** - Đặt lại bộ đếm huấn luyện.
+9. **/trogiup** - Hiển thị hướng dẫn này.
 `;
     bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: 'Markdown' });
 });
@@ -1088,13 +990,21 @@ bot.onText(/\/trogiup/, (msg) => {
 bot.onText(/\/showindicators/, async (msg) => {
     const chatId = msg.chat.id;
     setUserSettings(chatId, 1);
-    bot.sendMessage(chatId, '✅ Đã bật hiển thị chỉ số kỹ thuật (RSI, Stochastic, v.v.).');
+    bot.sendMessage(chatId, '✅ Đã bật hiển thị chỉ số kỹ thuật.');
 });
 
 bot.onText(/\/hideindicators/, async (msg) => {
     const chatId = msg.chat.id;
     setUserSettings(chatId, 0);
     bot.sendMessage(chatId, '✅ Đã tắt hiển thị chỉ số kỹ thuật.');
+});
+
+bot.onText(/\/resettraining/, (msg) => {
+    const chatId = msg.chat.id;
+    trainingCounter = 0;
+    shouldStopTraining = false;
+    bot.sendMessage(chatId, '✅ Đã đặt lại bộ đếm huấn luyện và trạng thái dừng.');
+    console.log(`✅ Đã đặt lại trainingCounter về 0 bởi chat ${chatId}`);
 });
 
 function startAutoChecking() {
@@ -1122,10 +1032,9 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
 
     if (confidence < confidenceThreshold) return;
 
-    // Tính ATR để làm ngưỡng động
     const df = await fetchKlines(symbol, pair, timeframe, 50);
-    const atr = df ? computeATR(df) : 0.0001; // ATR mặc định nếu không lấy được dữ liệu
-    const priceChangeThreshold = atr * 0.5; // Ngưỡng dựa trên 0.5x ATR
+    const atr = df ? computeATR(df) : 0.0001;
+    const priceChangeThreshold = atr * 0.5;
 
     if (lastSignal && Math.abs((entryPrice - lastSignal.entryPrice) / lastSignal.entryPrice) < priceChangeThreshold) {
         console.log(`⚠️ Giá thay đổi không đáng kể (${(priceChangeThreshold * 100).toFixed(2)}%), bỏ qua tín hiệu ${symbol}/${pair}.`);
@@ -1140,18 +1049,45 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     bot.sendMessage(chatId, `🚨 *TÍN HIỆU ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})* 🚨\n${result}`, { parse_mode: 'Markdown' });
     signalBuffer.set(configKey, { result, signalText, timestamp: now, entryPrice });
 
-    const { exitPrice, profit } = await simulateTrade(symbol, pair, timeframe, signalType, entryPrice, sl, tp, now, true); // Sử dụng WebSocket
+    const { exitPrice: rawExitPrice, profit: rawProfit } = await simulateTrade(symbol, pair, timeframe, signalType, entryPrice, sl, tp, now);
 
     if (lastSignal && lastSignal.signalText === signalText) {
         console.log(`⚠️ Tín hiệu ${symbol}/${pair} không thay đổi, không lưu vào database.`);
         return;
     }
 
-    if (exitPrice !== null) {
-        db.run(`INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [chatId, symbol, pair, timeframe, signalText, confidence, now, entryPrice, exitPrice, profit]);
-        console.log(`✅ Gửi & lưu tín hiệu ${symbol}/${pair} cho chat ${chatId} (Độ tin: ${confidence}%)`);
+    // Kiểm tra và xử lý giá trị null
+    const safeChatId = chatId ?? 0; // Không bao giờ null, nhưng thêm để chắc chắn
+    const safeSymbol = symbol ?? 'UNKNOWN';
+    const safePair = pair ?? 'UNKNOWN';
+    const safeTimeframe = timeframe ?? 'UNKNOWN';
+    const safeSignal = signalType ?? 'UNKNOWN';
+    const safeConfidence = confidence ?? 0;
+    const safeTimestamp = now ?? Date.now();
+    const safeEntryPrice = entryPrice ?? 0;
+    const safeExitPrice = rawExitPrice ?? null; // Để null nếu không có giá thoát
+    const safeProfit = rawProfit ?? null; // Để null nếu không có lợi nhuận
+
+    // Kiểm tra các giá trị không được null
+    if (!safeChatId || !safeSymbol || !safePair || !safeTimeframe || !safeSignal || safeConfidence === null || safeTimestamp === null || safeEntryPrice === null) {
+        console.error(`❌ Dữ liệu không hợp lệ khi lưu tín hiệu ${safeSymbol}/${safePair}: `, {
+            chatId: safeChatId, symbol: safeSymbol, pair: safePair, timeframe: safeTimeframe, signal: safeSignal,
+            confidence: safeConfidence, timestamp: safeTimestamp, entryPrice: safeEntryPrice
+        });
+        return;
     }
+
+    db.run(
+        `INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [safeChatId, safeSymbol, safePair, safeTimeframe, safeSignal, safeConfidence, safeTimestamp, safeEntryPrice, safeExitPrice, safeProfit],
+        (err) => {
+            if (err) {
+                console.error(`❌ Lỗi lưu tín hiệu ${safeSymbol}/${safePair} vào database: ${err.message}`);
+            } else {
+                console.log(`✅ Gửi & lưu tín hiệu ${safeSymbol}/${safePair} cho chat ${safeChatId} (Độ tin: ${safeConfidence}%)`);
+            }
+        }
+    );
 }
 
 // =====================
@@ -1166,19 +1102,21 @@ function dynamicTrainingControl() {
     if (avgAcc > 0.85 && (maxAcc - minAcc) < 0.05) {
         if (enableSimulation) {
             enableSimulation = false;
-            console.log("✅ Dynamic Training Control: Mô hình ổn định, dừng giả lập.");
+            shouldStopTraining = false; // Thêm dòng này nếu bạn muốn đặt lại trạng thái dừng
+            trainingCounter = 0; // Đặt lại bộ đếm khi mô hình ổn định
+            console.log("✅ Dynamic Training Control: Mô hình ổn định, dừng giả lập và đặt lại trainingCounter.");
             if (adminChatId) {
-                bot.sendMessage(adminChatId, `✅ *Mô hình đã ổn định* | Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}% | Đã dừng giả lập.`, { parse_mode: 'Markdown' });
+                bot.sendMessage(adminChatId, `✅ *Mô hình đã ổn định* | Accuracy: ${(avgAcc * 100).toFixed(2)}% | Đã dừng giả lập và đặt lại bộ đếm huấn luyện.`, { parse_mode: 'Markdown' });
             }
         }
     } else {
         if (!enableSimulation) {
             enableSimulation = true;
             console.log("⚡ Dynamic Training Control: Hiệu suất chưa ổn định, kích hoạt lại giả lập.");
-            simulateRealTimeForConfigs(1000).then(r => console.log(r));
+            simulateRealTimeForConfigs(1000);
         } else {
             console.log("⚡ Dynamic Training Control: Hiệu suất chưa ổn định, tiếp tục giả lập.");
-            simulateRealTimeForConfigs(1000).then(r => console.log(r));
+            simulateRealTimeForConfigs(1000);
         }
     }
 }
@@ -1194,6 +1132,6 @@ function dynamicTrainingControl() {
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
     setInterval(() => {
         console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-        optimizeModel().then(r => console.log(r));
-    }, 5 * 60 * 60 * 1000); // 5 giờ (5 * 60 * 60 * 1000 ms)
+        optimizeModel();
+    }, 5 * 60 * 60 * 1000); // 5 giờ
 })();
