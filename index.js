@@ -42,23 +42,16 @@ function subscribeBinance(symbol, timeframe) {
 
         const candles = cacheKlines.get(symbol);
         candles.push(newCandle);
-        if (candles.length > 500) candles.shift(); // Chỉ lưu 500 nến gần nhất
+
+        // Giữ tối đa 1000 nến, xóa nến cũ nhất
+        if (candles.length > 1000) candles.shift();
 
         console.log(`📡 Cập nhật WebSocket ${symbol}/${timeframe}: ${newCandle.close}`);
     });
 
-    ws.on('error', (err) => {
-        console.error(`⚠️ WebSocket ${symbol}/${timeframe} lỗi: ${err.message}`);
-        setTimeout(() => subscribeBinance(symbol, timeframe), 5000);
-    });
-
-    ws.on('close', () => {
-        console.warn(`⚠️ WebSocket ${symbol}/${timeframe} đóng, kết nối lại...`);
-        setTimeout(() => subscribeBinance(symbol, timeframe), 5000);
-    });
-
     wsStreams.set(streamKey, ws);
 }
+
 
 // Khởi động WebSocket
 subscribeBinance('BTC', '1m');
@@ -230,24 +223,35 @@ let bestAccuracy = 0;
 let recentAccuracies = [];
 let lastAccuracy = 0;
 let model;
-
 function createModel(windowSize, units) {
     const model = tf.sequential();
 
-    // Giữ returnSequences: true để LSTM trả về toàn bộ chuỗi
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 22], returnSequences: true }));
+    // LSTM Layer - Giữ `returnSequences: true` để dự đoán chuỗi
+    model.add(tf.layers.lstm({
+        units,
+        inputShape: [windowSize, 22],
+        returnSequences: true,
+        kernelInitializer: 'glorotUniform'  // Tránh lỗi `Orthogonal initializer`
+    }));
 
-    // Attention Layer (giúp mô hình tập trung vào thông tin quan trọng)
-    model.add(tf.layers.dense({ units: units / 2, activation: 'relu' }));
+    // Thêm Dense để giảm chiều dữ liệu
+    model.add(tf.layers.dense({ units: Math.max(units / 2, 16), activation: 'relu' }));
+
+    // BatchNormalization - Đặt sau Dense để tránh lỗi `built`
+    model.add(tf.layers.batchNormalization());
+
+    // Fully Connected Layers
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
 
-    // Đầu ra có shape [batch_size, sequence_length, 3]
+    // Output Layer - Dự đoán tín hiệu giao dịch [LONG, SHORT, WAIT]
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
 
+    // Compile Model
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
 
     return model;
 }
+
 
 async function optimizeModel() {
     if (recentAccuracies.length < 50) return;
@@ -623,6 +627,13 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         const tpMultiplier = 2 + shortProb * 4;
         sl = Math.min(currentPrice + atr * slMultiplier, resistance);
         tp = Math.max(currentPrice - atr * tpMultiplier, support);
+    }
+
+// 🔥 Thêm kiểm tra tín hiệu yếu
+    const priceChangeThreshold = atr * 0.5;  // Chỉ trade nếu giá biến động ít nhất 0.5 * ATR
+    if (Math.abs(tp - entry) < priceChangeThreshold || Math.abs(entry - sl) < priceChangeThreshold) {
+        console.log(`⚠️ Biến động giá quá nhỏ, bỏ qua tín hiệu ${symbol}/${pair} (${timeframe})`);
+        return { result: '⚠️ Biến động giá quá nhỏ, bỏ qua tín hiệu.', confidence: 0 };
     }
 
     // Kiểm tra tính hợp lệ của SL & TP
@@ -1218,16 +1229,19 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     }
 
     db.run(
-        `INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [safeChatId, safeSymbol, safePair, safeTimeframe, safeSignal, safeConfidence, safeTimestamp, safeEntryPrice, safeExitPrice, safeProfit],
+        `INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [chatId, symbol, pair, timeframe, signal, confidence, timestamp, entryPrice, exitPrice, profit],
         (err) => {
             if (err) {
-                console.error(`❌ Lỗi lưu tín hiệu ${safeSymbol}/${safePair} vào database: ${err.message}`);
+                console.error(`❌ Lỗi lưu tín hiệu ${symbol}/${pair} vào database: ${err.message}`);
+                fs.appendFileSync('bot_error.log', `${new Date().toISOString()} - Lỗi SQLite: ${err.message}\n`);
             } else {
-                console.log(`✅ Gửi & lưu tín hiệu ${safeSymbol}/${safePair} cho chat ${safeChatId} (Độ tin: ${safeConfidence}%)`);
+                console.log(`✅ Lưu tín hiệu ${symbol}/${pair} thành công.`);
             }
         }
     );
+
 }
 
 // =====================
