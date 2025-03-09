@@ -10,6 +10,59 @@ const tf = require('@tensorflow/tfjs');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const WebSocket = require('ws');
+const wsStreams = new Map();
+const cacheKlines = new Map();
+
+function subscribeBinance(symbol, timeframe) {
+    const streamKey = `${symbol.toLowerCase()}_${timeframe}`;
+
+    if (wsStreams.has(streamKey)) {
+        console.log(`🔄 WebSocket ${symbol}/${timeframe} đã kết nối.`);
+        return;
+    }
+
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}usdt@kline_${timeframe}`);
+
+    ws.on('message', (data) => {
+        const json = JSON.parse(data);
+        const kline = json.k;
+        const newCandle = {
+            timestamp: kline.t,
+            open: parseFloat(kline.o),
+            high: parseFloat(kline.h),
+            low: parseFloat(kline.l),
+            close: parseFloat(kline.c),
+            volume: parseFloat(kline.v)
+        };
+
+        if (!cacheKlines.has(symbol)) {
+            cacheKlines.set(symbol, []);
+        }
+
+        const candles = cacheKlines.get(symbol);
+        candles.push(newCandle);
+        if (candles.length > 500) candles.shift(); // Chỉ lưu 500 nến gần nhất
+
+        console.log(`📡 Cập nhật WebSocket ${symbol}/${timeframe}: ${newCandle.close}`);
+    });
+
+    ws.on('error', (err) => {
+        console.error(`⚠️ WebSocket ${symbol}/${timeframe} lỗi: ${err.message}`);
+        setTimeout(() => subscribeBinance(symbol, timeframe), 5000);
+    });
+
+    ws.on('close', () => {
+        console.warn(`⚠️ WebSocket ${symbol}/${timeframe} đóng, kết nối lại...`);
+        setTimeout(() => subscribeBinance(symbol, timeframe), 5000);
+    });
+
+    wsStreams.set(streamKey, ws);
+}
+
+// Khởi động WebSocket
+subscribeBinance('BTC', '1m');
+subscribeBinance('ADA', '1m');
 
 // =====================
 //     CẤU HÌNH
@@ -180,10 +233,19 @@ let model;
 
 function createModel(windowSize, units) {
     const model = tf.sequential();
-    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 20], returnSequences: false }));
+
+    // Giữ returnSequences: true để LSTM trả về toàn bộ chuỗi
+    model.add(tf.layers.lstm({ units, inputShape: [windowSize, 22], returnSequences: true }));
+
+    // Attention Layer (giúp mô hình tập trung vào thông tin quan trọng)
+    model.add(tf.layers.dense({ units: units / 2, activation: 'relu' }));
     model.add(tf.layers.dense({ units: 10, activation: 'relu' }));
+
+    // Đầu ra có shape [batch_size, sequence_length, 3]
     model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
+
     model.compile({ optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
+
     return model;
 }
 
@@ -239,36 +301,57 @@ async function trainModelData(data, symbol, pair, timeframe) {
     try {
         const inputs = [];
         const outputs = [];
-        for (let i = currentConfig.windowSize; i < data.length; i++) {
+
+        for (let i = currentConfig.windowSize; i < data.length - 5; i++) {
             const windowFeatures = [];
+            const futureSignals = [];
+
             for (let j = i - currentConfig.windowSize; j < i; j++) {
                 windowFeatures.push(computeFeature(data, j, symbol, pair, timeframe));
             }
-            inputs.push(windowFeatures);
 
-            const subData = data.slice(0, i + 1);
-            const currentPrice = subData[subData.length - 1].close;
-            const futureData = data.slice(i + 1, i + 11);
-            let trueSignal = [0, 0, 1]; // WAIT
-            if (futureData.length >= 10) {
-                const futurePrice = futureData[futureData.length - 1].close;
-                const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
-                if (priceChange > 0.5) trueSignal = [1, 0, 0]; // LONG
-                else if (priceChange < -0.5) trueSignal = [0, 1, 0]; // SHORT
+            // Dự đoán chuỗi tín hiệu 5 nến tiếp theo
+            for (let k = 0; k < 5; k++) {
+                if (i + k + 1 < data.length) {
+                    const currentPrice = data[i + k].close;
+                    const futurePrice = data[i + k + 1].close;
+                    const priceChange = (futurePrice - currentPrice) / currentPrice * 100;
+
+                    let trueSignal = [0, 0, 1]; // WAIT
+                    if (priceChange > 0.5) trueSignal = [1, 0, 0]; // LONG
+                    else if (priceChange < -0.5) trueSignal = [0, 1, 0]; // SHORT
+
+                    futureSignals.push(trueSignal);
+                }
             }
-            outputs.push(trueSignal);
+
+            // Đảm bảo futureSignals có đúng 5 bước (nếu thiếu, bổ sung WAIT)
+            while (futureSignals.length < 5) {
+                futureSignals.push([0, 0, 1]);
+            }
+
+            inputs.push(windowFeatures);
+            outputs.push(futureSignals); // Giờ outputs luôn có shape `[5, 3]`
         }
+
         if (inputs.length === 0) return;
-        const xs = tf.tensor3d(inputs);
-        const ys = tf.tensor2d(outputs);
+
+        // Đảm bảo shape [batch_size, sequence_length, feature_dim]
+        const xs = tf.tensor3d(inputs, [inputs.length, 5, 22]);
+        const ys = tf.tensor3d(outputs, [outputs.length, 5, 3]); // Đảm bảo có shape `[batch_size, 5, 3]`
+
         await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 32, shuffle: true });
-        console.log(`✅ Mô hình đã được huấn luyện ban đầu với ${symbol}/${pair} (${timeframe}).`);
+
+        console.log(`✅ Mô hình đã được huấn luyện với ${symbol}/${pair} (${timeframe}).`);
         xs.dispose();
         ys.dispose();
     } catch (error) {
-        console.error(`Lỗi huấn luyện mô hình với ${symbol}/${pair} (${timeframe}):`, error.message);
+        console.error(`❌ Lỗi huấn luyện mô hình với ${symbol}/${pair} (${timeframe}):`, error.message);
     }
 }
+
+
+
 
 async function trainModelWithMultiplePairs() {
     const pairs = [
@@ -403,84 +486,123 @@ function computeFeature(data, j, symbol, pair, timeframe) {
         console.error(`⚠️ computeFeature: Thiếu dữ liệu cho ${symbol}/${pair} (${timeframe}) tại index ${j}`);
         return Array(20).fill(0);
     }
+
     const subData = data.slice(0, j + 1);
     const close = subData.map(d => d.close);
     const volume = subData.map(d => d.volume);
 
+    const maxClose = close.length > 0 ? Math.max(...close) : 1;
+    const safeDivide = (num, denom) => (denom !== 0 ? num / denom : 0);
+
+    // Tính toán các chỉ báo kỹ thuật
     const rsi = computeRSI(close) || 50;
     const ma10 = computeMA(close, 10) || 0;
     const ma50 = computeMA(close, 50) || 0;
-    const [, , histogram] = computeMACD(close) || [0, 0, 0];
-    const [, middleBB] = computeBollingerBands(close) || [0, 0, 0];
+    const ema200 = computeMA(close, 200) || 0;
+    const atr = computeATR(subData) || 0.0001;
     const adx = computeADX(subData) || 0;
     const stochasticK = computeStochastic(subData) || 50;
     const vwap = computeVWAP(subData) || 0;
     const obv = computeOBV(subData) || 0;
-    const ichimoku = computeIchimoku(subData) || { conversionLine: 0, baseLine: 0 };
     const fibLevels = computeFibonacciLevels(subData) || { 0.618: 0 };
-    const currentPrice = close[close.length - 1];
+
+    const ichimoku = computeIchimoku(subData) || { conversionLine: 0, baseLine: 0 };
+    const histogram = computeMACD(close)?.[2] || 0;
+    const middleBB = computeBollingerBands(close)?.[1] || 0;
+
+    // Kiểm tra volume spike
     const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
+
+    // One-hot encoding cho Symbol, Pair, Timeframe
     const symbolEmbedding = getEmbedding(symbol, symbolMap);
     const pairEmbedding = getEmbedding(pair, pairMap);
     const timeframeEmbedding = getEmbedding(timeframe, timeframeMap);
-    const safeDivide = (num, denom) => (denom !== 0 ? num / denom : 0);
+
+    // Tạo vector đặc trưng
     const features = [
         rsi / 100,
         adx / 100,
-        safeDivide(histogram, Math.max(...close)),
+        safeDivide(histogram, maxClose),
         volumeSpike,
-        safeDivide(ma10 - ma50, Math.max(...close)),
-        safeDivide(currentPrice - middleBB, Math.max(...close)),
+        safeDivide(ma10 - ma50, maxClose),
+        safeDivide(close[close.length - 1] - middleBB, maxClose),
         stochasticK / 100,
-        safeDivide(currentPrice - vwap, Math.max(...close)),
+        safeDivide(close[close.length - 1] - vwap, maxClose),
         obv / 1e6,
-        ichimoku ? safeDivide(ichimoku.conversionLine - ichimoku.baseLine, Math.max(...close)) : 0,
-        safeDivide(currentPrice - fibLevels[0.618], Math.max(...close)),
+        safeDivide(ichimoku.conversionLine - ichimoku.baseLine, maxClose),
+        safeDivide(close[close.length - 1] - fibLevels[0.618], maxClose),
+        safeDivide(close[close.length - 1] - ema200, maxClose),  // EMA 200
+        safeDivide(close[close.length - 1] - atr, maxClose),  // ATR
         ...symbolEmbedding,
         ...pairEmbedding,
         ...timeframeEmbedding
     ];
 
-    const cleanFeatures = features.map(f => (isNaN(f) || f === undefined ? 0 : f));
-    return cleanFeatures;
+    return features.map(f => (isNaN(f) || f === undefined ? 0 : f));
 }
-
 // =====================
 // PHÂN TÍCH CRYPTO
 // =====================
 async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThresholds = {}) {
     const df = await fetchKlines(symbol, pair, timeframe);
-    if (!df || df.length < currentConfig.windowSize) return { result: '❗ Không thể lấy dữ liệu', confidence: 0 };
+    if (!df || df.length < currentConfig.windowSize) {
+        return { result: '❗ Không đủ dữ liệu để dự đoán', confidence: 0 };
+    }
 
     const windowFeatures = [];
     for (let i = df.length - currentConfig.windowSize; i < df.length; i++) {
-        windowFeatures.push(computeFeature(df, i, symbol, pair, timeframe));
+        const features = computeFeature(df, i, symbol, pair, timeframe);
+        if (features.some(f => isNaN(f))) {
+            console.warn(`⚠️ Dữ liệu tại ${i} chứa NaN - Bỏ qua`);
+            continue;
+        }
+        windowFeatures.push(features);
+    }
+
+    if (windowFeatures.length < 5) {
+        console.error("🚫 Không đủ dữ liệu hợp lệ để dự đoán.");
+        return { result: '❗ Không đủ dữ liệu hợp lệ', confidence: 0 };
     }
 
     const currentPrice = df[df.length - 1].close;
     const closePrices = df.map(d => d.close);
     const volume = df.map(d => d.volume);
-    const volumeMA = computeMA(volume, 20);
+    const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
-    const rsi = computeRSI(closePrices);
-    const adx = computeADX(df);
-    const [macd, signal, histogram] = computeMACD(closePrices);
-    const [upperBB, middleBB, lowerBB] = computeBollingerBands(closePrices);
-    let atr = computeATR(df);
-    if (atr <= 0) atr = 0.0001;
-    const stochasticK = computeStochastic(df);
-    const vwap = computeVWAP(df);
-    const obv = computeOBV(df);
-    const ichimoku = computeIchimoku(df);
-    const fibLevels = computeFibonacciLevels(df);
-    const { support, resistance } = computeSupportResistance(df);
-    const input = tf.tensor3d([windowFeatures]);
+
+    // Tính toán chỉ báo kỹ thuật
+    let atr = computeATR(df) || 0.0001;
+    const rsi = computeRSI(closePrices) || 50;
+    const adx = computeADX(df) || 0;
+    const [macd = 0, signal = 0, histogram = 0] = computeMACD(closePrices) || [0, 0, 0];
+    const [upperBB = 0, middleBB = 0, lowerBB = 0] = computeBollingerBands(closePrices) || [0, 0, 0];
+    const stochasticK = computeStochastic(df) || 50;
+    const vwap = computeVWAP(df) || 0;
+    const obv = computeOBV(df) || 0;
+    const ichimoku = computeIchimoku(df) || { spanA: 0, spanB: 0 };
+    const fibLevels = computeFibonacciLevels(df) || { 0.618: 0, 0.5: 0 };
+    const { support = currentPrice - atr * 2, resistance = currentPrice + atr * 2 } = computeSupportResistance(df) || {};
+
+    // Dự đoán với mô hình AI
+    const input = tf.tensor3d([windowFeatures], [1, 5, 22]);
     const prediction = model.predict(input);
-    const [longProb, shortProb, waitProb] = prediction.dataSync();
+    const predictions = prediction.arraySync()[0]; // Trả về [5,3] (dự đoán cho 5 nến)
     input.dispose();
     prediction.dispose();
 
+    // Tính xác suất trung bình từ dự đoán 5 bước
+    let longProb = 0, shortProb = 0, waitProb = 0;
+    for (const [l, s, w] of predictions) {
+        longProb += l;
+        shortProb += s;
+        waitProb += w;
+    }
+    longProb /= 5;
+    shortProb /= 5;
+    waitProb /= 5;
+
+    // Xác định tín hiệu giao dịch
     let signalType = 'WAIT';
     let signalText = '⚪️ ĐỢI - Chưa có tín hiệu';
     let confidence, entry = currentPrice, sl = 0, tp = 0;
@@ -494,8 +616,6 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         const tpMultiplier = 2 + longProb * 4;
         sl = Math.max(currentPrice - atr * slMultiplier, support);
         tp = Math.min(currentPrice + atr * tpMultiplier, resistance);
-        if (sl >= entry) sl = Math.max(entry - atr * 0.5, support);
-        if (tp <= entry) tp = Math.min(entry + atr, resistance);
     } else if (maxProb === shortProb) {
         signalType = 'SHORT';
         signalText = '🔴 SHORT - Bán';
@@ -503,64 +623,51 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         const tpMultiplier = 2 + shortProb * 4;
         sl = Math.min(currentPrice + atr * slMultiplier, resistance);
         tp = Math.max(currentPrice - atr * tpMultiplier, support);
-        if (sl <= entry) sl = Math.min(entry + atr * 0.5, resistance);
-        if (tp >= entry) tp = Math.max(entry - atr, support);
     }
 
-    const showTechnicalIndicators = await getUserSettings(chatId);
+    // Kiểm tra tính hợp lệ của SL & TP
+    if (sl >= entry) sl = Math.max(entry - atr * 0.5, support);
+    if (tp <= entry) tp = Math.min(entry + atr, resistance);
 
+    // Hiển thị thông tin kỹ thuật
     const details = [];
-    if (showTechnicalIndicators) {
-        details.push(`📈 RSI: ${rsi.toFixed(1)}`);
-        details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
-        details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
-        details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
-        const isAboveCloud = ichimoku && currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB);
-        const isBelowCloud = ichimoku && currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB);
-        details.push(`☁️ Ichimoku: ${isAboveCloud ? 'Trên đám mây' : isBelowCloud ? 'Dưới đám mây' : 'Trong đám mây'}`);
-        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}`);
-    }
-    details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
+    details.push(`📈 RSI: ${rsi.toFixed(1)}`);
+    details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
+    details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
+    details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
+    details.push(`📏 Fib 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}`);
     details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
-    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-    details.push(`⏰ Thời gian: ${timestamp}`);
-
-    if (adx < 20) details.push(`📊 Xu hướng: Đi ngang`);
-    else if (longProb > shortProb) details.push(`📈 Xu hướng: Tăng (dự đoán AI)`);
-    else if (shortProb > longProb) details.push(`📉 Xu hướng: Giảm (dự đoán AI)`);
-    else details.push(`📊 Xu hướng: Không rõ`);
+    details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
+    details.push(`📊 Xu hướng: ${adx < 20 ? 'Đi ngang' : longProb > shortProb ? 'Tăng (AI dự đoán)' : 'Giảm (AI dự đoán)'}`);
 
     if (signalType !== 'WAIT') {
-        let risk, reward, rr;
-        if (signalType === 'LONG') {
-            risk = entry - sl;
-            reward = tp - entry;
-        } else {
-            risk = sl - entry;
-            reward = entry - tp;
-        }
-        if (risk > 0) {
-            rr = (reward / risk).toFixed(2);
-            details.push(`⚖️ R:R: ${rr}:1`);
-        } else {
-            details.push(`⚖️ R:R: N/A`);
-        }
+        let risk = Math.abs(entry - sl);
+        let reward = Math.abs(tp - entry);
+        let rr = risk > 0 ? (reward / risk).toFixed(2) : "N/A";
+
+        details.push(`⚖️ R:R: ${rr}:1`);
         details.push(`✅ Độ tin cậy: ${confidence}%`);
         details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
         details.push(`🛑 SL: ${sl.toFixed(4)}`);
         details.push(`💰 TP: ${tp.toFixed(4)}`);
-        const leverage = signalType === 'LONG' ? Math.round(longProb * 10) : Math.round(shortProb * 10);
-        const safeLeverage = Math.min(leverage, 125);
-        details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
+
+        // Gợi ý đòn bẩy
+        const leverage = Math.min(Math.round((longProb > shortProb ? longProb : shortProb) * 10), 125);
+        details.push(`💡 Khuyến nghị đòn bẩy: x${leverage}`);
     }
 
-    const resultText = `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})*\n`
+    // Tạo kết quả
+    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    details.push(`⏰ Thời gian: ${timestamp}`);
+
+    const resultText = `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n`
         + `💰 Giá: ${currentPrice.toFixed(4)}\n`
         + `⚡️ *${signalText}*\n`
         + details.join('\n');
 
     return { result: resultText, confidence, signalType, signalText, entryPrice: entry, sl, tp };
 }
+
 
 // =====================
 // SELF-EVALUATE & TRAIN
@@ -572,24 +679,16 @@ let shouldStopTraining = false;
 async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, symbol, pair, timeframe) {
     console.log(`Training check - shouldStopTraining: ${shouldStopTraining}, trainingCounter: ${trainingCounter}, Data length: ${historicalSlice?.length || 'null'}`);
 
-    if (!historicalSlice) {
-        console.log("🚫 Không thể huấn luyện: historicalSlice không hợp lệ.");
-        return;
-    }
-    if (!fullData) {
-        console.log("🚫 Không thể huấn luyện: fullData không hợp lệ.");
-        return;
-    }
-    if (shouldStopTraining) {
-        console.log("🚫 Không thể huấn luyện: Huấn luyện đã bị dừng (shouldStopTraining = true).");
+    if (!historicalSlice || !fullData || shouldStopTraining) {
+        console.log("🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng huấn luyện.");
         return;
     }
     if (historicalSlice.length < currentConfig.windowSize) {
-        console.log(`🚫 Không thể huấn luyện: Số lượng dữ liệu (${historicalSlice.length}) nhỏ hơn windowSize (${currentConfig.windowSize}).`);
+        console.log(`🚫 Không thể huấn luyện: Dữ liệu (${historicalSlice.length}) nhỏ hơn windowSize (${currentConfig.windowSize}).`);
         return;
     }
     if (currentIndex + 11 > fullData.length) {
-        console.log(`🚫 Không thể huấn luyện: Không đủ dữ liệu cho phần dự đoán (currentIndex: ${currentIndex}, fullData.length: ${fullData.length}).`);
+        console.log(`🚫 Không thể huấn luyện: Không đủ dữ liệu tương lai.`);
         return;
     }
 
@@ -597,7 +696,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
     const futureData = fullData.slice(currentIndex + 1, currentIndex + 11);
     const futurePrice = futureData.length >= 10 ? futureData[futureData.length - 1].close : null;
     if (!futurePrice) {
-        console.log("🚫 Không thể huấn luyện: Không có dữ liệu giá tương lai đủ để tính toán.");
+        console.log("🚫 Không thể huấn luyện: Không có dữ liệu giá tương lai.");
         return;
     }
 
@@ -608,21 +707,34 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
 
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
-        windowFeatures.push(computeFeature(historicalSlice, i, symbol, pair, timeframe));
-    }
-    if (windowFeatures.some(f => f.some(v => isNaN(v)))) {
-        console.error(`🚫 Dữ liệu chứa NaN, bỏ qua huấn luyện.`);
-        return;
+        const features = computeFeature(historicalSlice, i, symbol, pair, timeframe);
+        if (features.some(f => isNaN(f))) {
+            console.warn(`⚠️ Bỏ qua nến ${i} do dữ liệu chứa NaN.`);
+            return;
+        }
+        windowFeatures.push(features);
     }
 
-    trainingCounter++;  // Vẫn giữ trainingCounter để theo dõi, nhưng không giới hạn
+    // Đảm bảo `windowFeatures` có đúng `sequence_length = 5`
+    while (windowFeatures.length < 5) {
+        windowFeatures.push(windowFeatures[windowFeatures.length - 1]); // Lặp lại dữ liệu cuối nếu thiếu
+    }
+
+    // Đảm bảo `trueSignal` có `sequence_length = 5`
+    const futureSignals = new Array(5).fill(trueSignal);
+
+    trainingCounter++;
 
     try {
         const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
         const batchSize = usedMemoryMB > 450 ? 8 : 16;
-        const xs = tf.tensor3d([windowFeatures]);
-        const ys = tf.tensor2d([trueSignal]);
+
+        // Chuyển đổi sang tensor đúng định dạng `[batch_size, sequence_length, feature_dim]`
+        const xs = tf.tensor3d([windowFeatures], [1, 5, 22]);
+        const ys = tf.tensor3d([futureSignals], [1, 5, 3]); // Dự đoán chuỗi 5 bước
+
         const history = await model.fit(xs, ys, { epochs: 1, batchSize, shuffle: true });
+
         xs.dispose();
         ys.dispose();
 
@@ -636,6 +748,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         console.error(`❌ Lỗi huấn luyện: ${error.message}`);
     }
 }
+
 
 
 // Báo cáo hiệu suất mô hình
@@ -676,15 +789,26 @@ const signalBuffer = new Map();
 let apiErrorCounter = 0;
 
 async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, delay = 5000) {
+    // Nếu WebSocket có dữ liệu, ưu tiên lấy từ cache
+    if (cacheKlines.has(symbol)) {
+        const candles = cacheKlines.get(symbol);
+        if (candles.length >= limit) {
+            console.log(`📡 Lấy dữ liệu từ WebSocket cache (${candles.length} nến)`);
+            return candles.slice(-limit);
+        }
+    }
+
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             const response = await axios.get(`${BINANCE_API}/klines`, {
                 params: { symbol: `${symbol.toUpperCase()}${pair.toUpperCase()}`, interval: timeframe, limit },
                 timeout: 10000,
             });
+
             if (!response || !response.data || !Array.isArray(response.data)) {
                 throw new Error('Dữ liệu trả về từ API không hợp lệ');
             }
+
             const klines = response.data.map(d => ({
                 timestamp: d[0],
                 open: parseFloat(d[1]),
@@ -693,20 +817,36 @@ async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, de
                 close: parseFloat(d[4]),
                 volume: parseFloat(d[5])
             }));
+
+            // Lọc nến hợp lệ
             const filteredKlines = klines.filter(k =>
                 k.close > 0 && k.open > 0 && k.high > 0 && k.low > 0 && k.volume >= 0
             );
-            console.log(`Fetched ${filteredKlines.length} klines for ${symbol}/${pair} (${timeframe})`);
+
+            // Lưu vào cache để dùng sau
+            cacheKlines.set(symbol, filteredKlines);
+
+            console.log(`✅ Fetched ${filteredKlines.length} klines from API for ${symbol}/${pair} (${timeframe})`);
             return filteredKlines;
         } catch (error) {
             let errorMessage = error.message;
             if (error.response) {
                 errorMessage = `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`;
             }
-            console.error(`API Error (${symbol}/${pair}, attempt ${attempt}/${retries}): ${errorMessage}`);
+
+            console.error(`❌ API Error (${symbol}/${pair}, attempt ${attempt}/${retries}): ${errorMessage}`);
             fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - API Error: ${errorMessage}\n`);
+
+            // Nếu lỗi 429 (Rate Limit), chờ lâu hơn
+            if (error.response && error.response.status === 429) {
+                delay *= 2;
+                console.warn(`⚠️ API Rate Limit - Đang tăng thời gian chờ lên ${delay}ms`);
+            }
+
+            // Nếu thử hết số lần retry, trả về null
             if (attempt === retries) return null;
-            await new Promise(resolve => setTimeout(resolve, delay * attempt));
+
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
     }
 }
