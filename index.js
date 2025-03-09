@@ -1267,7 +1267,7 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     db.run(
         `INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [chatId, symbol, pair, timeframe, signal, confidence, timestamp, entryPrice, exitPrice, profit],
+        [chatId, symbol, pair, timeframe, signalType, confidence, now, entryPrice, rawExitPrice, rawProfit],
         (err) => {
             if (err) {
                 console.error(`❌ Lỗi lưu tín hiệu ${symbol}/${pair} vào database: ${err.message}`);
@@ -1323,5 +1323,5 @@ function dynamicTrainingControl() {
     setInterval(() => {
         console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
         optimizeModel();
-    }, 1 * 60 * 60 * 1000); // 1 giờ
+    }, 1 * 60 * 60 * 1000); // 5 giờ
 })();
