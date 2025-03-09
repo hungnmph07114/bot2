@@ -1117,43 +1117,36 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
     const now = Date.now();
 
-    // Lấy dữ liệu tín hiệu gần nhất từ cache
     const lastSignal = signalBuffer.get(configKey);
-
-    // Gọi phân tích tín hiệu song song
     const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
 
-    // Kiểm tra nếu tín hiệu không đạt ngưỡng tự tin
     if (confidence < confidenceThreshold) return;
 
-    // Kiểm tra khoảng cách giữa giá mới và giá tín hiệu cũ
-    if (lastSignal && Math.abs((entryPrice - lastSignal.entryPrice) / lastSignal.entryPrice) < 0.005) {
-        console.log(`⚠️ Giá thay đổi không đáng kể, bỏ qua tín hiệu ${symbol}/${pair}.`);
+    // Tính ATR để làm ngưỡng động
+    const df = await fetchKlines(symbol, pair, timeframe, 50);
+    const atr = df ? computeATR(df) : 0.0001; // ATR mặc định nếu không lấy được dữ liệu
+    const priceChangeThreshold = atr * 0.5; // Ngưỡng dựa trên 0.5x ATR
+
+    if (lastSignal && Math.abs((entryPrice - lastSignal.entryPrice) / lastSignal.entryPrice) < priceChangeThreshold) {
+        console.log(`⚠️ Giá thay đổi không đáng kể (${(priceChangeThreshold * 100).toFixed(2)}%), bỏ qua tín hiệu ${symbol}/${pair}.`);
         return;
     }
 
-    // Kiểm tra thời gian cooldown để tránh spam
     if (lastSignal && now - lastSignal.timestamp < SIGNAL_COOLDOWN) {
         console.log(`⚠️ Tín hiệu ${symbol}/${pair} bị chặn do cooldown.`);
         return;
     }
 
-    // Gửi tín hiệu đến Telegram
     bot.sendMessage(chatId, `🚨 *TÍN HIỆU ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})* 🚨\n${result}`, { parse_mode: 'Markdown' });
-
-    // Cập nhật cache
     signalBuffer.set(configKey, { result, signalText, timestamp: now, entryPrice });
 
-    // Giả lập giao dịch
-    const { exitPrice, profit } = await simulateTrade(symbol, pair, timeframe, signalType, entryPrice, sl, tp, now);
+    const { exitPrice, profit } = await simulateTrade(symbol, pair, timeframe, signalType, entryPrice, sl, tp, now, true); // Sử dụng WebSocket
 
-    // Kiểm tra nếu tín hiệu mới giống hệt tín hiệu trước thì bỏ qua lưu
     if (lastSignal && lastSignal.signalText === signalText) {
         console.log(`⚠️ Tín hiệu ${symbol}/${pair} không thay đổi, không lưu vào database.`);
         return;
     }
 
-    // Chỉ lưu nếu có exitPrice hợp lệ
     if (exitPrice !== null) {
         db.run(`INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [chatId, symbol, pair, timeframe, signalText, confidence, now, entryPrice, exitPrice, profit]);
