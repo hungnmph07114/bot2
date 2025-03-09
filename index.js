@@ -1015,50 +1015,35 @@ bot.onText(/\?(.+)/, async (msg, match) => {
 
 bot.onText(/\/tinhieu (.+)/, async (msg, match) => {
     try {
-        const chatId = msg.chat.id;
-        const text = match[1].trim().toLowerCase();
-        const regex = /^([a-zA-Z]+)[,\s]+([a-zA-Z]+)[,\s]+(\d+[mhd])$/;
-        const parts = text.match(regex);
-
-        if (!parts) {
-            return bot.sendMessage(chatId, '⚠️ Cú pháp sai! Ví dụ: /tinhieu ADA,USDT,5m hoặc /tinhieu ada usdt 5m');
+        let parts = match[1].split(',').map(p => p.trim().toLowerCase());
+        if (parts.length < 3) {
+            parts = match[1].split(/\s+/).map(p => p.trim().toLowerCase());
+            if (parts.length !== 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: /tinhieu ada,usdt,5m');
         }
-
-        const [, symbol, pair, timeframeInput] = parts;
+        const [symbol, pair, timeframeInput] = parts;
         const timeframe = normalizeTimeframe(timeframeInput);
+        if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
 
-        if (!supportedTimeframes.includes(timeframe)) {
-            return bot.sendMessage(chatId, `⚠️ Khung thời gian không hợp lệ! Hỗ trợ: ${supportedTimeframes.join(', ')}`);
-        }
+        const valid = await isValidMarket(symbol, pair);
+        if (!valid) return bot.sendMessage(msg.chat.id, `⚠️ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không tồn tại trên Binance!`);
 
-        // Kiểm tra nhanh xem cặp này có hợp lệ trên Binance không
-        if (!validMarkets.has(`${symbol}${pair}`)) {
-            return bot.sendMessage(chatId, `⚠️ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không tồn tại trên Binance!`);
-        }
-
-        // Kiểm tra xem đã theo dõi cặp này chưa
+        const chatId = msg.chat.id;
         if (!autoWatchList.has(chatId)) autoWatchList.set(chatId, []);
         const watchList = autoWatchList.get(chatId);
-
         if (!watchList.some(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe)) {
             watchList.push({ symbol, pair, timeframe });
-
-            // Lưu vào config database
             addWatchConfig(chatId, symbol, pair, timeframe, (err) => {
                 if (err) console.error('Lỗi lưu cấu hình:', err.message);
             });
-
-            // Đăng ký WebSocket Binance
-            subscribeBinance(symbol, pair, timeframe);
-            bot.sendMessage(chatId, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})`);
+            bot.sendMessage(msg.chat.id, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
+            subscribeBinance(symbol, timeframe);
         } else {
-            bot.sendMessage(chatId, `ℹ️ Bạn đã theo dõi cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe}) rồi!`);
+            bot.sendMessage(msg.chat.id, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
         }
     } catch (error) {
         bot.sendMessage(msg.chat.id, `❌ Lỗi /tinhieu: ${error.message}`);
     }
 });
-
 
 bot.onText(/\/dungtinhieu (.+)/, (msg, match) => {
     try {
@@ -1067,28 +1052,21 @@ bot.onText(/\/dungtinhieu (.+)/, (msg, match) => {
 
         const [symbol, pair, timeframeInput] = parts;
         const timeframe = normalizeTimeframe(timeframeInput);
-
-        if (!timeframe || !supportedTimeframes.includes(timeframe)) {
-            return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ! Hỗ trợ: ${supportedTimeframes.join(', ')}`);
-        }
+        if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
 
         const chatId = msg.chat.id;
-        if (!autoWatchList.has(chatId)) {
-            return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
-        }
+        if (!autoWatchList.has(chatId)) return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
 
         const watchList = autoWatchList.get(chatId);
-        if (watchList.length === 0) {
-            return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
-        }
-
         const idx = watchList.findIndex(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe);
         if (idx !== -1) {
             watchList.splice(idx, 1);
-            unsubscribeBinance(symbol, pair, timeframe);
-            bot.sendMessage(chatId, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})`);
+            deleteWatchConfig(chatId, symbol, pair, timeframe, (err) => {
+                if (err) console.error('Lỗi xóa cấu hình:', err.message);
+            });
+            bot.sendMessage(msg.chat.id, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
         } else {
-            bot.sendMessage(chatId, `ℹ️ Bạn chưa theo dõi cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})!`);
+            bot.sendMessage(msg.chat.id, 'ℹ️ Bạn chưa theo dõi cặp này!');
         }
     } catch (error) {
         bot.sendMessage(msg.chat.id, `❌ Lỗi /dungtinhieu: ${error.message}`);
