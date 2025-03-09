@@ -1036,7 +1036,7 @@ bot.onText(/\/tinhieu (.+)/, async (msg, match) => {
                 if (err) console.error('Lỗi lưu cấu hình:', err.message);
             });
             bot.sendMessage(msg.chat.id, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
-            subscribeBinance(symbol, timeframe);
+            subscribeBinance(symbol, pair,timeframe);
         } else {
             bot.sendMessage(msg.chat.id, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
         }
@@ -1052,21 +1052,25 @@ bot.onText(/\/dungtinhieu (.+)/, (msg, match) => {
 
         const [symbol, pair, timeframeInput] = parts;
         const timeframe = normalizeTimeframe(timeframeInput);
-        if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
+
+        if (!timeframe || !supportedTimeframes.includes(timeframe)) {
+            return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ! Hỗ trợ: ${supportedTimeframes.join(', ')}`);
+        }
 
         const chatId = msg.chat.id;
-        if (!autoWatchList.has(chatId)) return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
+        if (!autoWatchList.has(chatId)) {
+            return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
+        }
 
         const watchList = autoWatchList.get(chatId);
         const idx = watchList.findIndex(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe);
+
         if (idx !== -1) {
             watchList.splice(idx, 1);
-            deleteWatchConfig(chatId, symbol, pair, timeframe, (err) => {
-                if (err) console.error('Lỗi xóa cấu hình:', err.message);
-            });
-            bot.sendMessage(msg.chat.id, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
+            unsubscribeBinance(symbol, pair, timeframe);
+            bot.sendMessage(chatId, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})`);
         } else {
-            bot.sendMessage(msg.chat.id, 'ℹ️ Bạn chưa theo dõi cặp này!');
+            bot.sendMessage(chatId, `ℹ️ Bạn chưa theo dõi cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})!`);
         }
     } catch (error) {
         bot.sendMessage(msg.chat.id, `❌ Lỗi /dungtinhieu: ${error.message}`);
