@@ -164,14 +164,6 @@ function setUserSettings(chatId, showTechnicalIndicators) {
     );
 }
 
-// Xuất file bot.db
-function exportDatabase(chatId) {
-    return new Promise((resolve, reject) => {
-        bot.sendDocument(chatId, BOT_DB_PATH, { caption: 'Đây là file cơ sở dữ liệu bot.db' })
-            .then(() => resolve())
-            .catch((err) => reject(err));
-    });
-}
 
 // =====================
 // CẤU HÌNH LSTM
@@ -1190,10 +1182,10 @@ function dynamicTrainingControl() {
         if (!enableSimulation) {
             enableSimulation = true;
             console.log("⚡ Dynamic Training Control: Hiệu suất chưa ổn định, kích hoạt lại giả lập.");
-            simulateRealTimeForConfigs(1000);
+            simulateRealTimeForConfigs(1000).then(r => console.log(r));
         } else {
             console.log("⚡ Dynamic Training Control: Hiệu suất chưa ổn định, tiếp tục giả lập.");
-            simulateRealTimeForConfigs(1000);
+            simulateRealTimeForConfigs(1000).then(r => console.log(r));
         }
     }
 }
@@ -1205,7 +1197,7 @@ function dynamicTrainingControl() {
     await initializeModel();
     await trainModelWithMultiplePairs();
     startAutoChecking();
-    simulateRealTimeForConfigs(1000);
+    await simulateRealTimeForConfigs(1000);
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
     setInterval(() => {
         console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
