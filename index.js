@@ -630,7 +630,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         console.error(`🚫 Dữ liệu chứa NaN, bỏ qua huấn luyện.`);
         return;
     }
-
+ trainingCounter++
     try {
         // Tự động giảm batchSize nếu RAM cao
         let batchSize = usedMemoryMB > 450 ? 8 : 16;
