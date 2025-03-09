@@ -578,11 +578,8 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
 
     const windowFeatures = [];
     for (let i = df.length - currentConfig.windowSize; i < df.length; i++) {
-        const features = computeFeature(df, i, symbol, pair, timeframe);
-        if (features.some(f => isNaN(f))) {
-            console.warn(`⚠️ Dữ liệu tại ${i} chứa NaN - Bỏ qua`);
-            continue;
-        }
+        let features = computeFeature(df, i, symbol, pair, timeframe);
+        features = features.map(f => isNaN(f) ? 0 : f); // Thay thế NaN bằng 0
         windowFeatures.push(features);
     }
 
@@ -597,27 +594,24 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     const volumeMA = computeMA(volume, 20) || 0;
     const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
 
-    // Tính toán chỉ báo kỹ thuật
     let atr = computeATR(df) || 0.0001;
     const rsi = computeRSI(closePrices) || 50;
     const adx = computeADX(df) || 0;
     const [macd = 0, signal = 0, histogram = 0] = computeMACD(closePrices) || [0, 0, 0];
     const [upperBB = 0, middleBB = 0, lowerBB = 0] = computeBollingerBands(closePrices) || [0, 0, 0];
     const stochasticK = computeStochastic(df) || 50;
-    const vwap = computeVWAP(df) || 0;
+    const vwap = computeVWAP(df) || currentPrice;
     const obv = computeOBV(df) || 0;
-    const ichimoku = computeIchimoku(df) || { spanA: 0, spanB: 0 };
-    const fibLevels = computeFibonacciLevels(df) || { 0.618: 0, 0.5: 0 };
+    const ichimoku = computeIchimoku(df) || { spanA: currentPrice, spanB: currentPrice };
+    const fibLevels = computeFibonacciLevels(df) || { 0.618: currentPrice, 0.5: currentPrice };
     const { support = currentPrice - atr * 2, resistance = currentPrice + atr * 2 } = computeSupportResistance(df) || {};
 
-    // Dự đoán với mô hình AI
     const input = tf.tensor3d([windowFeatures], [1, 5, 22]);
     const prediction = model.predict(input);
-    const predictions = prediction.arraySync()[0]; // Trả về [5,3] (dự đoán cho 5 nến)
+    const predictions = prediction.arraySync()[0];
     input.dispose();
     prediction.dispose();
 
-    // Tính xác suất trung bình từ dự đoán 5 bước
     let longProb = 0, shortProb = 0, waitProb = 0;
     for (const [l, s, w] of predictions) {
         longProb += l;
@@ -628,34 +622,25 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     shortProb /= 5;
     waitProb /= 5;
 
-    // Xác định tín hiệu giao dịch
     let signalType = 'WAIT';
     let signalText = '⚪️ ĐỢI - Chưa có tín hiệu';
-    let confidence, entry = currentPrice, sl = 0, tp = 0;
-    const maxProb = Math.max(longProb, shortProb, waitProb);
-    confidence = Math.round(maxProb * 100);
+    let confidence = Math.round(Math.max(longProb, shortProb, waitProb) * 100);
+    let entry = currentPrice, sl = 0, tp = 0;
 
-    if (maxProb === longProb) {
+    if (longProb > shortProb) {
         signalType = 'LONG';
         signalText = '🟢 LONG - Mua';
-        const slMultiplier = 3 - longProb * 2;
-        const tpMultiplier = 2 + longProb * 4;
-        sl = Math.max(currentPrice - atr * slMultiplier, support);
-        tp = Math.min(currentPrice + atr * tpMultiplier, resistance);
-    } else if (maxProb === shortProb) {
+        sl = Math.max(currentPrice - Math.max(atr * 0.5, atr * 0.3), support);
+        tp = Math.min(currentPrice + Math.max(atr, atr * 1.2), resistance);
+    } else if (shortProb > longProb) {
         signalType = 'SHORT';
         signalText = '🔴 SHORT - Bán';
-        const slMultiplier = 3 - shortProb * 2;
-        const tpMultiplier = 2 + shortProb * 4;
-        sl = Math.min(currentPrice + atr * slMultiplier, resistance);
-        tp = Math.max(currentPrice - atr * tpMultiplier, support);
+        sl = Math.min(currentPrice + Math.max(atr * 0.5, atr * 0.3), resistance);
+        tp = Math.max(currentPrice - Math.max(atr, atr * 1.2), support);
+    } else {
+        confidence = Math.min(confidence, 50);
     }
 
-    // Kiểm tra tính hợp lệ của SL & TP
-    if (sl >= entry) sl = Math.max(entry - atr * 0.5, support);
-    if (tp <= entry) tp = Math.min(entry + atr, resistance);
-
-    // 📜 Hiển thị thông tin kỹ thuật
     const details = [];
     const showTechnicalIndicators = await getUserSettings(chatId);
 
@@ -665,7 +650,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
         details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
         details.push(`☁️ Ichimoku: ${currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB) ? 'Trên đám mây' : currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB) ? 'Dưới đám mây' : 'Trong đám mây'}`);
-        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
+        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(6)}, 0.5: ${fibLevels[0.5].toFixed(6)}`);
     }
 
     details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
@@ -676,14 +661,16 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     details.push(`🛑 SL: ${sl.toFixed(4)}`);
     details.push(`💰 TP: ${tp.toFixed(4)}`);
 
-    const resultText = `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n`
-        + `💰 Giá: ${currentPrice.toFixed(4)}\n`
-        + `⚡️ *${signalText}*\n`
+    const resultText = `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*
+`
+        + `💰 Giá: ${currentPrice.toFixed(4)}
+`
+        + `⚡️ *${signalText}*
+`
         + details.join('\n');
 
     return { result: resultText, confidence, signalType, signalText, entryPrice: entry, sl, tp };
 }
-
 
 // =====================
 // SELF-EVALUATE & TRAIN
@@ -1261,7 +1248,7 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
             chatId: safeChatId, symbol: safeSymbol, pair: safePair, timeframe: safeTimeframe, signal: safeSignal,
             confidence: safeConfidence, timestamp: safeTimestamp, entryPrice: safeEntryPrice
         });
-        return;
+        return
     }
 
     db.run(
