@@ -651,47 +651,30 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         tp = Math.max(currentPrice - atr * tpMultiplier, support);
     }
 
-// 🔥 Thêm kiểm tra tín hiệu yếu
-    const priceChangeThreshold = atr * 0.5;  // Chỉ trade nếu giá biến động ít nhất 0.5 * ATR
-    if (Math.abs(tp - entry) < priceChangeThreshold || Math.abs(entry - sl) < priceChangeThreshold) {
-        console.log(`⚠️ Biến động giá quá nhỏ, bỏ qua tín hiệu ${symbol}/${pair} (${timeframe})`);
-        return { result: '⚠️ Biến động giá quá nhỏ, bỏ qua tín hiệu.', confidence: 0 };
-    }
-
     // Kiểm tra tính hợp lệ của SL & TP
     if (sl >= entry) sl = Math.max(entry - atr * 0.5, support);
     if (tp <= entry) tp = Math.min(entry + atr, resistance);
 
-    // Hiển thị thông tin kỹ thuật
+    // 📜 Hiển thị thông tin kỹ thuật
     const details = [];
-    details.push(`📈 RSI: ${rsi.toFixed(1)}`);
-    details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
-    details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
-    details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
-    details.push(`📏 Fib 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}`);
-    details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
-    details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
-    details.push(`📊 Xu hướng: ${adx < 20 ? 'Đi ngang' : longProb > shortProb ? 'Tăng (AI dự đoán)' : 'Giảm (AI dự đoán)'}`);
+    const showTechnicalIndicators = await getUserSettings(chatId);
 
-    if (signalType !== 'WAIT') {
-        let risk = Math.abs(entry - sl);
-        let reward = Math.abs(tp - entry);
-        let rr = risk > 0 ? (reward / risk).toFixed(2) : "N/A";
-
-        details.push(`⚖️ R:R: ${rr}:1`);
-        details.push(`✅ Độ tin cậy: ${confidence}%`);
-        details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
-        details.push(`🛑 SL: ${sl.toFixed(4)}`);
-        details.push(`💰 TP: ${tp.toFixed(4)}`);
-
-        // Gợi ý đòn bẩy
-        const leverage = Math.min(Math.round((longProb > shortProb ? longProb : shortProb) * 10), 125);
-        details.push(`💡 Khuyến nghị đòn bẩy: x${leverage}`);
+    if (showTechnicalIndicators) {
+        details.push(`📈 RSI: ${rsi.toFixed(1)}`);
+        details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
+        details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
+        details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
+        details.push(`☁️ Ichimoku: ${currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB) ? 'Trên đám mây' : currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB) ? 'Dưới đám mây' : 'Trong đám mây'}`);
+        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
     }
 
-    // Tạo kết quả
-    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-    details.push(`⏰ Thời gian: ${timestamp}`);
+    details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
+    details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
+    details.push(`📊 Xu hướng: ${adx < 20 ? 'Đi ngang' : longProb > shortProb ? 'Tăng (AI dự đoán)' : 'Giảm (AI dự đoán)'}`);
+    details.push(`✅ Độ tin cậy: ${confidence}%`);
+    details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
+    details.push(`🛑 SL: ${sl.toFixed(4)}`);
+    details.push(`💰 TP: ${tp.toFixed(4)}`);
 
     const resultText = `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n`
         + `💰 Giá: ${currentPrice.toFixed(4)}\n`
@@ -1340,5 +1323,5 @@ function dynamicTrainingControl() {
     setInterval(() => {
         console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
         optimizeModel();
-    }, 1 * 60 * 60 * 1000); // 5 giờ
+    }, 1 * 60 * 60 * 1000); // 1 giờ
 })();
