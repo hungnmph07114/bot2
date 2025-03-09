@@ -1133,5 +1133,5 @@ function dynamicTrainingControl() {
     setInterval(() => {
         console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
         optimizeModel();
-    }, 5 * 60 * 60 * 1000); // 5 giờ
+    }, 1 * 60 * 60 * 1000); // 5 giờ
 })();
