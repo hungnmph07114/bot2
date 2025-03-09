@@ -11,14 +11,17 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const WebSocket = require('ws');
-const wsStreams = new Map();
+
+const wsStreams = {}; // Chứa các kết nối WebSocket theo cặp & timeframe
+const activeSubscriptions = {}; // Đếm số người theo dõi mỗi cặp
 const cacheKlines = new Map();
 
 function subscribeBinance(symbol, timeframe) {
     const streamKey = `${symbol.toLowerCase()}_${timeframe}`;
 
-    if (wsStreams.has(streamKey)) {
-        console.log(`🔄 WebSocket ${symbol}/${timeframe} đã kết nối.`);
+    if (wsStreams[streamKey]) {
+        activeSubscriptions[streamKey] = (activeSubscriptions[streamKey] || 0) + 1;
+        console.log(`📡 WebSocket ${symbol}/${timeframe} đang hoạt động. Người theo dõi: ${activeSubscriptions[streamKey]}`);
         return;
     }
 
@@ -42,17 +45,36 @@ function subscribeBinance(symbol, timeframe) {
 
         const candles = cacheKlines.get(symbol);
         candles.push(newCandle);
+        if (candles.length > 2000) candles.shift();
 
-        // Giữ tối đa 1000 nến, xóa nến cũ nhất
-        if (candles.length > 1000) candles.shift();
-
-        console.log(`📡 Cập nhật WebSocket ${symbol}/${timeframe}: ${newCandle.close}`);
     });
 
-    wsStreams.set(streamKey, ws);
+    ws.on('open', () => console.log(`✅ Đã kết nối WebSocket ${symbol}/${timeframe}`));
+    ws.on('close', () => {
+        console.log(`❌ WebSocket ${symbol}/${timeframe} đã đóng.`);
+        delete wsStreams[streamKey];
+        delete activeSubscriptions[streamKey];
+    });
+    ws.on('error', (err) => console.error(`🚨 Lỗi WebSocket ${symbol}/${timeframe}:`, err.message));
+
+    wsStreams[streamKey] = ws;
+    activeSubscriptions[streamKey] = 1;
 }
 
+function unsubscribeBinance(symbol, timeframe) {
+    const streamKey = `${symbol.toLowerCase()}_${timeframe}`;
+    if (!wsStreams[streamKey]) return;
 
+    activeSubscriptions[streamKey] -= 1;
+    console.log(`📉 Người theo dõi ${symbol}/${timeframe} giảm còn: ${activeSubscriptions[streamKey]}`);
+
+    if (activeSubscriptions[streamKey] <= 0) {
+        console.log(`❌ Đóng WebSocket ${symbol}/${timeframe} do không còn người theo dõi.`);
+        wsStreams[streamKey].close();
+        delete wsStreams[streamKey];
+        delete activeSubscriptions[streamKey];
+    }
+}
 // Khởi động WebSocket
 subscribeBinance('BTC', '1m');
 subscribeBinance('ADA', '1m');
@@ -688,8 +710,6 @@ let trainingCounter = 0;
 let shouldStopTraining = false;
 
 async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, symbol, pair, timeframe) {
-    console.log(`Training check - shouldStopTraining: ${shouldStopTraining}, trainingCounter: ${trainingCounter}, Data length: ${historicalSlice?.length || 'null'}`);
-
     if (!historicalSlice || !fullData || shouldStopTraining) {
         console.log("🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng huấn luyện.");
         return;
@@ -804,7 +824,6 @@ async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, de
     if (cacheKlines.has(symbol)) {
         const candles = cacheKlines.get(symbol);
         if (candles.length >= limit) {
-            console.log(`📡 Lấy dữ liệu từ WebSocket cache (${candles.length} nến)`);
             return candles.slice(-limit);
         }
     }
@@ -942,7 +961,6 @@ async function simulateConfig(config, stepInterval) {
             return;
         }
         try {
-            console.log(`Simulate step - Index: ${currentIndex}, Data length: ${historicalData.length}`);
             const historicalSlice = historicalData.slice(0, currentIndex);
             if (historicalSlice.length < currentConfig.windowSize) {
                 currentIndex++;
@@ -1037,8 +1055,7 @@ bot.onText(/\/tinhieu (.+)/, async (msg, match) => {
                 if (err) console.error('Lỗi lưu cấu hình:', err.message);
             });
             bot.sendMessage(msg.chat.id, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
-            const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
-            if (!lastIndexMap.has(configKey)) simulateConfig({ chatId, symbol, pair, timeframe }, 1000);
+            subscribeBinance(symbol, timeframe);
         } else {
             bot.sendMessage(msg.chat.id, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
         }
@@ -1063,10 +1080,8 @@ bot.onText(/\/dungtinhieu (.+)/, (msg, match) => {
         const idx = watchList.findIndex(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe);
         if (idx !== -1) {
             watchList.splice(idx, 1);
-            deleteWatchConfig(chatId, symbol, pair, timeframe, (err) => {
-                if (err) console.error('Lỗi xóa cấu hình:', err.message);
-            });
             bot.sendMessage(msg.chat.id, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
+            unsubscribeBinance(symbol, timeframe);
         } else {
             bot.sendMessage(msg.chat.id, 'ℹ️ Bạn chưa theo dõi cặp này!');
         }
@@ -1120,7 +1135,45 @@ bot.onText(/\/tradehistory/, (msg) => {
     );
 });
 
+bot.onText(/\/status/, (msg) => {
+    try {
+        const chatId = msg.chat.id;
+        const memoryUsage = process.memoryUsage();
+        const usedMemoryMB = memoryUsage.heapUsed / 1024 / 1024;
 
+        if (!recentAccuracies || !trainingCounter || typeof enableSimulation === 'undefined' || !currentConfig) {
+            throw new Error('Biến cần thiết chưa được định nghĩa.');
+        }
+
+        if (!Array.isArray(recentAccuracies)) recentAccuracies = [];
+        if (!currentConfig || typeof currentConfig.windowSize === 'undefined' || typeof currentConfig.units === 'undefined' || typeof currentConfig.epochs === 'undefined') {
+            throw new Error('Cấu hình mô hình chưa hợp lệ.');
+        }
+
+        const avgAcc = recentAccuracies.length > 0 ? recentAccuracies.reduce((sum, val) => sum + val, 0) / recentAccuracies.length : 0;
+        const maxAcc = recentAccuracies.length > 0 ? Math.max(...recentAccuracies) : 0;
+        const minAcc = recentAccuracies.length > 0 ? Math.min(...recentAccuracies) : 0;
+
+        const statusMessage = `
+📊 *Trạng thái Bot*
+- Số lần huấn luyện: ${trainingCounter}
+- Độ chính xác trung bình: ${(avgAcc * 100).toFixed(2)}\%
+- Độ chính xác cao nhất: ${(maxAcc * 100).toFixed(2)}\%
+- Độ chính xác thấp nhất: ${(minAcc * 100).toFixed(2)}\%
+- RAM: ${usedMemoryMB.toFixed(2)} MB
+- Giả lập: ${enableSimulation ? 'Đang chạy' : 'Đã dừng'}
+- Cấu hình mô hình: WINDOW_SIZE=${currentConfig.windowSize}, Units=${currentConfig.units}, Epochs=${currentConfig.epochs}
+        `.trim();
+
+        console.log(`Gửi statusMessage: ${statusMessage}`);
+        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Gửi statusMessage: ${statusMessage}\n`);
+        bot.sendMessage(chatId, statusMessage, { parse_mode: 'HTML' });
+    } catch (error) {
+        console.error('Chi tiết lỗi:', error);
+        fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - Lỗi: ${error.stack}\n`);
+        bot.sendMessage(msg.chat.id, `❌ Lỗi trạng thái: ${error.message}`);
+    }
+});
 
 bot.onText(/\/trogiup/, (msg) => {
     const helpMessage = `
