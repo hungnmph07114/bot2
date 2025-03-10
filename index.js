@@ -581,7 +581,7 @@ function computeFeature(data, j, symbol, pair, timeframe) {
 async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     const cacheKey = `${symbol}_${pair}_${timeframe}`;
     let df = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
-    const minCandlesNeeded = 200;
+    const minCandlesNeeded = 500;
 
     if (!df || df.length < minCandlesNeeded) {
         console.warn(`⚠️ Không đủ dữ liệu (${df.length}/${minCandlesNeeded}) trong cacheKlines cho ${symbol}/${pair} (${timeframe}).`);
