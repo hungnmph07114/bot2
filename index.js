@@ -343,35 +343,50 @@ async function trainModelData(data, symbol, pair, timeframe) {
 }
 
 async function trainModelWithMultiplePairs() {
-    const pairs = [{ symbol: 'ADA', pair: 'USDT', timeframe: '15m' }];
-    for (const { symbol, pair, timeframe } of pairs) {
-        const cacheKey = `${symbol}_${pair}_${timeframe}`;
-        let data = cacheKlines.get(cacheKey) || [];
-        const minCandlesNeeded = currentConfig.windowSize + 5;
+    const pairs = [
+        { symbol: 'ADA', pair: 'USDT', timeframe: '15m' },
+    ];
 
-        if (!data || data.length < minCandlesNeeded) {
-            console.warn(`⚠️ Không đủ dữ liệu (${data.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
-            subscribeBinance(symbol, pair, timeframe);
-            const maxWaitTime = 10000;
-            const startTime = Date.now();
-            while (Date.now() - startTime < maxWaitTime) {
-                data = cacheKlines.get(cacheKey) || [];
-                if (data.length >= minCandlesNeeded) break;
-                console.log(`⏳ Đợi dữ liệu WebSocket: ${data.length}/${minCandlesNeeded}`);
-                await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-            if (data.length < minCandlesNeeded) {
-                data = await fetchKlines(symbol, pair, timeframe, 200);
-                if (!data || data.length < minCandlesNeeded) {
-                    console.error(`❌ Không thể lấy đủ dữ liệu ${symbol}/${pair} (${timeframe}).`);
-                    continue;
-                }
-            }
+    for (const { symbol, pair, timeframe } of pairs) {
+        const data = await fetchKlines(symbol, pair, timeframe, 500);
+        if (data) {
+            await trainModelData(data, symbol, pair, timeframe);
+        } else {
+            console.error(`❌ Không thể lấy dữ liệu ${symbol}/${pair} (${timeframe}) để huấn luyện.`);
         }
-        await trainModelData(data, symbol, pair, timeframe);
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 }
+// async function trainModelWithMultiplePairs() {
+//     const pairs = [{ symbol: 'ADA', pair: 'USDT', timeframe: '15m' }];
+//     for (const { symbol, pair, timeframe } of pairs) {
+//         const cacheKey = `${symbol}_${pair}_${timeframe}`;
+//         let data = cacheKlines.get(cacheKey) || [];
+//         const minCandlesNeeded = currentConfig.windowSize + 5;
+//
+//         if (!data || data.length < minCandlesNeeded) {
+//             console.warn(`⚠️ Không đủ dữ liệu (${data.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
+//             subscribeBinance(symbol, pair, timeframe);
+//             const maxWaitTime = 10000;
+//             const startTime = Date.now();
+//             while (Date.now() - startTime < maxWaitTime) {
+//                 data = cacheKlines.get(cacheKey) || [];
+//                 if (data.length >= minCandlesNeeded) break;
+//                 console.log(`⏳ Đợi dữ liệu WebSocket: ${data.length}/${minCandlesNeeded}`);
+//                 await new Promise(resolve => setTimeout(resolve, 1000));
+//             }
+//             if (data.length < minCandlesNeeded) {
+//                 data = await fetchKlines(symbol, pair, timeframe, 500);
+//                 if (!data || data.length < minCandlesNeeded) {
+//                     console.error(`❌ Không thể lấy đủ dữ liệu ${symbol}/${pair} (${timeframe}).`);
+//                     continue;
+//                 }
+//             }
+//         }
+//         await trainModelData(data, symbol, pair, timeframe);
+//         await new Promise(resolve => setTimeout(resolve, 1000));
+//     }
+// }
 
 async function optimizeModel() {
     if (recentAccuracies.length < 50) return;
