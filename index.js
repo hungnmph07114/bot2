@@ -668,10 +668,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
         details.push(`☁️ Ichimoku: ${isAboveCloud ? 'Trên đám mây' : isBelowCloud ? 'Dưới đám mây' : 'Trong đám mây'}`);
         details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
     }
-    details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
-    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-    details.push(`⏰ Thời gian: ${timestamp}`);
-    if (adx < 20) details.push(`📊 Xu hướng: Đi ngang`);
+    if (indicators.adx < 20) details.push(`📊 Xu hướng: Đi ngang`);
     else if (longProb > shortProb) details.push(`📈 Xu hướng: Tăng (dự đoán AI)`);
     else if (shortProb > longProb) details.push(`📉 Xu hướng: Giảm (dự đoán AI)`);
     else details.push(`📊 Xu hướng: Không rõ`);
@@ -695,12 +692,14 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
         details.push(`🛑 SL: ${sl.toFixed(4)}`);
         details.push(`💰 TP: ${tp.toFixed(4)}`);
         const leverage = signalText === '🟢 LONG - Mua'
-            ? Math.round(longProb * 10)
-            : Math.round(shortProb * 10);
+            ? Math.round(longProb * 125)
+            : Math.round(shortProb * 125);
         const safeLeverage = Math.min(leverage, 125);
         details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
     }
-        return {
+
+
+    return {
         result: `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n💰 Giá: ${currentPrice.toFixed(4)}\n⚡️ *${signalText}*\n${details.join('\n')}`,
         confidence,
         signalType,
