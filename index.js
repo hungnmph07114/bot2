@@ -195,9 +195,9 @@ setInterval(async () => {
 // Tự động kết nối WebSocket cho các cặp mặc định
 function autoSubscribe() {
     console.log("🔄 Đang khởi động bot và kết nối WebSocket...");
-    
+
         subscribeBinance("ADA", "USDT", "15m");
-        
+
     console.log("✅ WebSocket đã được khởi tạo cho các cặp mặc định.");
 }
 
@@ -508,8 +508,7 @@ async function trainModelData(data, symbol, pair, timeframe) {
 
 async function trainModelWithMultiplePairs() {
     const pairs = [
-        { symbol: 'BTC', pair: 'USDT', timeframe: '1h' },
-        { symbol: 'ADA', pair: 'USDT', timeframe: '1h' },
+        { symbol: 'ADA', pair: 'USDT', timeframe: '15m' },
     ];
 
     for (const { symbol, pair, timeframe } of pairs) {
