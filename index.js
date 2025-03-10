@@ -881,82 +881,137 @@ async function isValidMarket(symbol, pair) {
 // BOT COMMANDS
 const autoWatchList = new Map();
 
+
 bot.onText(/\?(.+)/, async (msg, match) => {
-    const parts = match[1].split(',').map(p => p.trim().toLowerCase());
-    if (parts.length < 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: ?ada,usdt,5m');
-    const [symbol, pair, timeframeInput] = parts;
-    const timeframe = normalizeTimeframe(timeframeInput);
-    if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
-    const { result } = await getCryptoAnalysis(symbol, pair, timeframe, msg.chat.id);
-    bot.sendMessage(msg.chat.id, result, { parse_mode: 'Markdown' });
+    try {
+        const parts = match[1].split(',').map(p => p.trim().toLowerCase());
+        if (parts.length < 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: ?ada,usdt,5m');
+
+        const [symbol, pair, timeframeInput] = parts;
+        const timeframe = normalizeTimeframe(timeframeInput);
+        if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
+
+        const valid = await isValidMarket(symbol, pair);
+        if (!valid) return bot.sendMessage(msg.chat.id, `⚠️ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không tồn tại trên Binance!`);
+
+        const chatId = msg.chat.id;
+        const { result } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
+        bot.sendMessage(msg.chat.id, result, { parse_mode: 'Markdown' });
+    } catch (error) {
+        bot.sendMessage(msg.chat.id, `❌ Lỗi phân tích: ${error.message}`);
+    }
 });
 
 bot.onText(/\/tinhieu (.+)/, async (msg, match) => {
-    const parts = match[1].split(',').map(p => p.trim().toLowerCase());
-    if (parts.length < 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: /tinhieu ada,usdt,5m');
-    const [symbol, pair, timeframeInput] = parts;
-    const timeframe = normalizeTimeframe(timeframeInput);
-    if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
+    try {
+        let parts = match[1].split(',').map(p => p.trim().toLowerCase());
+        if (parts.length < 3) {
+            parts = match[1].split(/\s+/).map(p => p.trim().toLowerCase());
+            if (parts.length !== 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: /tinhieu ada,usdt,5m');
+        }
+        const [symbol, pair, timeframeInput] = parts;
+        const timeframe = normalizeTimeframe(timeframeInput);
+        if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
 
-    const valid = await isValidMarket(symbol, pair);
-    if (!valid) return bot.sendMessage(msg.chat.id, `❌ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không tồn tại trên Binance!`);
+        const valid = await isValidMarket(symbol, pair);
+        if (!valid) return bot.sendMessage(msg.chat.id, `⚠️ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không tồn tại trên Binance!`);
 
-    const chatId = msg.chat.id;
-    if (!autoWatchList.has(chatId)) autoWatchList.set(chatId, []);
-    const watchList = autoWatchList.get(chatId);
-    if (!watchList.some(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe)) {
-        watchList.push({ symbol, pair, timeframe });
-        addWatchConfig(chatId, symbol, pair, timeframe);
-        bot.sendMessage(chatId, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
-        subscribeBinance(symbol, pair, timeframe);
-        simulateConfig({ chatId, symbol, pair, timeframe }, 1000);
-    } else {
-        bot.sendMessage(chatId, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
+        const chatId = msg.chat.id;
+        if (!autoWatchList.has(chatId)) autoWatchList.set(chatId, []);
+        const watchList = autoWatchList.get(chatId);
+        if (!watchList.some(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe)) {
+            watchList.push({ symbol, pair, timeframe });
+            addWatchConfig(chatId, symbol, pair, timeframe, (err) => {
+                if (err) console.error('Lỗi lưu cấu hình:', err.message);
+            });
+            bot.sendMessage(msg.chat.id, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
+            subscribeBinance(symbol, pair,timeframe);
+            const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
+            if (!lastIndexMap.has(configKey)) simulateConfig({ chatId, symbol, pair, timeframe }, 1000);
+        } else {
+            bot.sendMessage(msg.chat.id, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
+        }
+    } catch (error) {
+        bot.sendMessage(msg.chat.id, `❌ Lỗi /tinhieu: ${error.message}`);
     }
 });
 
 bot.onText(/\/dungtinhieu (.+)/, (msg, match) => {
-    const parts = match[1].split(',').map(p => p.trim().toLowerCase());
-    if (parts.length < 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: /dungtinhieu ada,usdt,5m');
-    const [symbol, pair, timeframeInput] = parts;
-    const timeframe = normalizeTimeframe(timeframeInput);
-    if (!timeframes[timeframe]) return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ!`);
-    const chatId = msg.chat.id;
-    const watchList = autoWatchList.get(chatId) || [];
-    const idx = watchList.findIndex(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe);
-    if (idx !== -1) {
-        watchList.splice(idx, 1);
-        deleteWatchConfig(chatId, symbol, pair, timeframe);
-        unsubscribeBinance(symbol, pair, timeframe);
-        bot.sendMessage(chatId, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})`);
-    } else {
-        bot.sendMessage(chatId, `ℹ️ Bạn chưa theo dõi cặp này!`);
+    try {
+        const parts = match[1].split(',').map(p => p.trim().toLowerCase());
+        if (parts.length < 3) return bot.sendMessage(msg.chat.id, '⚠️ Cú pháp sai! Ví dụ: /dungtinhieu ada,usdt,5m');
+
+        const [symbol, pair, timeframeInput] = parts;
+        const timeframe = normalizeTimeframe(timeframeInput);
+
+        if (!timeframe || !supportedTimeframes.includes(timeframe)) {
+            return bot.sendMessage(msg.chat.id, `⚠️ Khung thời gian không hợp lệ! Hỗ trợ: ${supportedTimeframes.join(', ')}`);
+        }
+
+        const chatId = msg.chat.id;
+        if (!autoWatchList.has(chatId)) {
+            return bot.sendMessage(chatId, 'ℹ️ Bạn chưa theo dõi cặp nào.');
+        }
+
+        const watchList = autoWatchList.get(chatId);
+        const idx = watchList.findIndex(w => w.symbol === symbol && w.pair === pair && w.timeframe === timeframe);
+
+        if (idx !== -1) {
+            watchList.splice(idx, 1);
+            unsubscribeBinance(symbol, pair, timeframe);
+            bot.sendMessage(chatId, `✅ Đã dừng theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})`);
+        } else {
+            bot.sendMessage(chatId, `ℹ️ Bạn chưa theo dõi cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})!`);
+        }
+    } catch (error) {
+        bot.sendMessage(msg.chat.id, `❌ Lỗi /dungtinhieu: ${error.message}`);
     }
 });
 
 bot.onText(/\/lichsu/, (msg) => {
     const chatId = msg.chat.id;
-    db.all(`SELECT symbol, pair, timeframe, signal, confidence, timestamp FROM signal_history WHERE chatId = ? ORDER BY timestamp DESC LIMIT 10`, [chatId], (err, rows) => {
-        if (err) return bot.sendMessage(chatId, '❌ Lỗi khi lấy lịch sử tín hiệu.');
-        if (!rows.length) return bot.sendMessage(chatId, 'ℹ️ Chưa có lịch sử tín hiệu nào.');
-        const historyText = rows.map(row => `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal} (${row.confidence}%) - ${new Date(row.timestamp).toLocaleString('vi-VN')}`).join('\n');
-        bot.sendMessage(chatId, `📜 *LỊCH SỬ TÍN HIỆU*\n${historyText}`, { parse_mode: 'Markdown' });
-    });
+    db.all(
+        `SELECT symbol, pair, timeframe, signal, confidence, timestamp FROM signal_history WHERE chatId = ? ORDER BY timestamp DESC LIMIT 10`,
+        [chatId],
+        (err, rows) => {
+            if (err) {
+                console.error('Lỗi truy vấn lịch sử:', err.message);
+                return bot.sendMessage(chatId, '❌ Lỗi khi lấy lịch sử tín hiệu.');
+            }
+            if (!rows || rows.length === 0) return bot.sendMessage(chatId, 'ℹ️ Chưa có lịch sử tín hiệu nào.');
+            const historyText = rows.map(row => {
+                const date = new Date(row.timestamp).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+                return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal} (${row.confidence}%) - ${date}`;
+            }).join('\n');
+            bot.sendMessage(chatId, `📜 *LỊCH SỬ TÍN HIỆU (10 gần nhất)*\n${historyText}`, { parse_mode: 'Markdown' });
+        }
+    );
 });
 
 bot.onText(/\/tradehistory/, (msg) => {
     const chatId = msg.chat.id;
-    db.all(`SELECT symbol, pair, timeframe, signal, entry_price, exit_price, profit, timestamp FROM signal_history WHERE chatId = ? AND entry_price IS NOT NULL ORDER BY timestamp DESC LIMIT 10`, [chatId], (err, rows) => {
-        if (err) return bot.sendMessage(chatId, '❌ Lỗi khi lấy lịch sử giao dịch.');
-        if (!rows.length) return bot.sendMessage(chatId, 'ℹ️ Chưa có lịch sử giao dịch nào.');
-        const historyText = rows.map(row => {
-            const profitText = row.profit !== null ? `${row.profit.toFixed(2)}%` : 'Đang chờ';
-            return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal}\n- Entry: ${row.entry_price.toFixed(4)}, Exit: ${row.exit_price ? row.exit_price.toFixed(4) : 'N/A'}, Profit: ${profitText}\n- ${new Date(row.timestamp).toLocaleString('vi-VN')}`;
-        }).join('\n\n');
-        bot.sendMessage(chatId, `📜 *LỊCH SỮ GIAO DỊCH*\n\n${historyText}`, { parse_mode: 'Markdown' });
-    });
-});
+    db.all(
+        `SELECT symbol, pair, timeframe, signal, entry_price, exit_price, profit, timestamp 
+         FROM signal_history 
+         WHERE chatId = ? AND entry_price IS NOT NULL 
+         ORDER BY timestamp DESC LIMIT 10`,
+        [chatId],
+        (err, rows) => {
+            if (err) {
+                console.error('Lỗi truy vấn lịch sử giao dịch:', err.message);
+                return bot.sendMessage(chatId, '❌ Lỗi khi lấy lịch sử giao dịch.');
+            }
+            if (!rows || rows.length === 0) return bot.sendMessage(chatId, 'ℹ️ Chưa có lịch sử giao dịch nào.');
 
+            const historyText = rows.map(row => {
+                const date = new Date(row.timestamp).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+                const profitText = row.profit !== null ? `${row.profit.toFixed(2)}%` : 'Đang chờ';
+                return `${row.symbol.toUpperCase()}/${row.pair.toUpperCase()} (${timeframes[row.timeframe]}): ${row.signal}\n- Entry: ${row.entry_price.toFixed(4)}, Exit: ${row.exit_price ? row.exit_price.toFixed(4) : 'N/A'}, Profit: ${profitText}\n- ${date}`;
+            }).join('\n\n');
+            bot.sendMessage(chatId, `📜 *LỊCH SỬ GIAO DỊCH GIẢ LẬP (10 gần nhất)*\n\n${historyText}`, { parse_mode: 'Markdown' });
+        }
+    );
+});
 bot.onText(/\/status/, (msg) => {
     try {
         const chatId = msg.chat.id;
