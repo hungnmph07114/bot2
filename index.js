@@ -574,7 +574,6 @@ function computeFeature(data, j, symbol, pair, timeframe) {
     return features.map(f => (isNaN(f) || f === undefined ? 0 : f));
 }
 
-// PHÂN TÍCH CRYPTO
 async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     const cacheKey = `${symbol}_${pair}_${timeframe}`;
     let df = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
@@ -605,10 +604,12 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
         windowFeatures.push(features);
     }
 
-    const currentPrice = df[df.length - 1].close;
+    const currentPrice = df[df.length - 1]?.close;
+    if (typeof currentPrice !== 'number') {
+        return { result: '❗ Lỗi giá hiện tại không xác định', confidence: 0 };
+    }
     const closePrices = df.map(d => d.close);
     const volume = df.map(d => d.volume);
-
     const indicators = {
         atr: computeATR(df) || 0.0001,
         rsi: computeRSI(closePrices) || 50,
@@ -622,7 +623,8 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
         fibLevels: computeFibonacciLevels(df) || { 0.618: currentPrice, 0.5: currentPrice },
         supportRes: computeSupportResistance(df) || { support: currentPrice - 0.01, resistance: currentPrice + 0.01 }
     };
-
+    const volumeMA = computeMA(volume, 20);
+    const volumeSpike = volume[volume.length - 1] > volumeMA * 1.5 ? 1 : 0;
     const input = tf.tensor3d([windowFeatures], [1, currentConfig.windowSize, 22]);
     const prediction = model.predict(input);
     const predictions = prediction.arraySync()[0];
@@ -659,15 +661,19 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     const showTechnicalIndicators = await getUserSettings(chatId);
     const details = [];
     if (showTechnicalIndicators) {
-        details.push(`📈 RSI: ${rsi.toFixed(1)}`);
-        details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
-        details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
-        details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
-        const isAboveCloud = ichimoku && currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB);
-        const isBelowCloud = ichimoku && currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB);
+        details.push(`📈 RSI: ${indicators.rsi.toFixed(1)}`);
+        details.push(`🎯 Stochastic %K: ${indicators.stochastic.toFixed(1)}`);
+        details.push(`📊 VWAP: ${indicators.vwap.toFixed(4)}`);
+        details.push(`📦 OBV: ${(indicators.obv / 1e6).toFixed(2)}M`);
+        const isAboveCloud = indicators.ichimoku && currentPrice > Math.max(indicators.ichimoku.spanA, indicators.ichimoku.spanB);
+        const isBelowCloud = indicators.ichimoku && currentPrice < Math.min(indicators.ichimoku.spanA, indicators.ichimoku.spanB);
         details.push(`☁️ Ichimoku: ${isAboveCloud ? 'Trên đám mây' : isBelowCloud ? 'Dưới đám mây' : 'Trong đám mây'}`);
-        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
+        details.push(`📏 Fib Levels: 0.618: ${indicators.fibLevels[0.618]?.toFixed(4) || 'N/A'}, 0.5: ${indicators.fibLevels[0.5]?.toFixed(4) || 'N/A'}, 0.382: ${indicators.fibLevels[0.382]?.toFixed(4) || 'N/A'}`);
     }
+    details.push(`📦 Volume: ${volumeSpike ? 'TĂNG ĐỘT BIẾN' : 'BÌNH THƯỜNG'}`);
+    details.push(`🛡️ Hỗ trợ: ${indicators.supportRes.support.toFixed(4)}, Kháng cự: ${indicators.supportRes.resistance.toFixed(4)}`);
+    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    details.push(`⏰ Thời gian: ${timestamp}`);
     if (indicators.adx < 20) details.push(`📊 Xu hướng: Đi ngang`);
     else if (longProb > shortProb) details.push(`📈 Xu hướng: Tăng (dự đoán AI)`);
     else if (shortProb > longProb) details.push(`📉 Xu hướng: Giảm (dự đoán AI)`);
@@ -697,7 +703,6 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
         const safeLeverage = Math.min(leverage, 125);
         details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
     }
-
 
     return {
         result: `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n💰 Giá: ${currentPrice.toFixed(4)}\n⚡️ *${signalText}*\n${details.join('\n')}`,
@@ -1126,7 +1131,7 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     const lastSignal = signalBuffer.get(configKey);
     const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
 
-    if (confidence < confidenceThreshold || signalType !== 'WAIT') return;
+    if (confidence < confidenceThreshold || signalType === 'WAIT') return;
 
     const df = await fetchKlines(symbol, pair, timeframe, 50);
     const atr = df ? computeATR(df) : 0.0001;
