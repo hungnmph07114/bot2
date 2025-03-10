@@ -4,18 +4,24 @@
  ********************************************/
 
 const TelegramBot = require('node-telegram-bot-api');
-const axios = require('axios');
 const { RSI, SMA, MACD, BollingerBands, ADX, ATR, Stochastic, OBV, IchimokuCloud } = require('technicalindicators');
 const tf = require('@tensorflow/tfjs');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const WebSocket = require('ws');
+const axios = require('axios');
+const wsStreams = {}; // Lưu WebSocket đang mở
+const activeSubscriptions = {}; // Lưu số người theo dõi mỗi cặp
+const cacheKlines = new Map(); // Lưu dữ liệu nến
+const lastUpdateTime = {}; // Lưu thời gian cập nhật mới nhất từ WebSocket
+const wsReconnectAttempts = {}; // Đếm số lần thử lại WebSocket
+const apiRetryCounter = {}; // 👉 Khai báo biến để tránh lỗi
+const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
+const BINANCE_API = 'https://api.binance.com/api/v3';
 
-const wsStreams = {}; // Chứa các kết nối WebSocket theo cặp & timeframe
-const activeSubscriptions = {}; // Đếm số người theo dõi mỗi cặp
-const cacheKlines = new Map();
 
+// 🟢 Đăng ký WebSocket Binance
 function subscribeBinance(symbol, pair, timeframe) {
     const streamKey = `${symbol.toLowerCase()}_${pair.toLowerCase()}_${timeframe}`;
 
@@ -25,44 +31,84 @@ function subscribeBinance(symbol, pair, timeframe) {
         return;
     }
 
-    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}${pair.toLowerCase()}@kline_${timeframe}`);
+    if (!wsReconnectAttempts[streamKey]) wsReconnectAttempts[streamKey] = 0;
+    if (wsReconnectAttempts[streamKey] >= 5) {
+        console.error(`🚨 WebSocket ${symbol}/${pair}/${timeframe} bị lỗi quá nhiều lần, dừng kết nối.`);
+        return;
+    }
+
+    const wsUrl = `${BINANCE_WS_URL}/${symbol.toLowerCase()}${pair.toLowerCase()}@kline_${timeframe}`;
+    console.log(`🔗 Kết nối WebSocket Binance: ${wsUrl}`);
+
+    const ws = new WebSocket(wsUrl);
+    wsStreams[streamKey] = ws;
+
+    ws.on('open', () => {
+        console.log(`✅ Kết nối WebSocket thành công: ${symbol}/${pair}/${timeframe}`);
+        activeSubscriptions[streamKey] = 1;
+        wsReconnectAttempts[streamKey] = 0; // Reset bộ đếm nếu kết nối thành công
+    });
 
     ws.on('message', (data) => {
-        const json = JSON.parse(data);
-        const kline = json.k;
-        const newCandle = {
-            timestamp: kline.t,
-            open: parseFloat(kline.o),
-            high: parseFloat(kline.h),
-            low: parseFloat(kline.l),
-            close: parseFloat(kline.c),
-            volume: parseFloat(kline.v)
-        };
+        try {
+            const json = JSON.parse(data);
+            if (!json.k) return;
 
-        const cacheKey = `${symbol}_${pair}`;
-        if (!cacheKlines.has(cacheKey)) {
-            cacheKlines.set(cacheKey, []);
+            const kline = json.k;
+            if (!kline.t || !kline.o || !kline.h || !kline.l || !kline.c || !kline.v) return;
+
+            const newCandle = {
+                timestamp: kline.t,
+                open: parseFloat(kline.o),
+                high: parseFloat(kline.h),
+                low: parseFloat(kline.l),
+                close: parseFloat(kline.c),
+                volume: parseFloat(kline.v)
+            };
+
+            const cacheKey = `${symbol}_${pair}_${timeframe}`;
+            if (!cacheKlines.has(cacheKey)) {
+                cacheKlines.set(cacheKey, []);
+            }
+
+            const candles = cacheKlines.get(cacheKey);
+            candles.push(newCandle);
+            if (candles.length > 2000) candles.shift();
+
+            lastUpdateTime[cacheKey] = Date.now(); // Cập nhật thời gian nhận dữ liệu real-time
+
+            console.log(`📊 [REAL-TIME] ${symbol}/${pair} (${timeframe}) - Close: ${newCandle.close}, Volume: ${newCandle.volume}`);
+
+        } catch (error) {
+            console.error(`❌ Lỗi xử lý dữ liệu WebSocket: ${error.message}`);
         }
-
-        const candles = cacheKlines.get(cacheKey);
-        candles.push(newCandle);
-        if (candles.length > 2000) candles.shift();
     });
 
-    ws.on('open', () => console.log(`✅ Đã kết nối WebSocket ${symbol}/${pair}/${timeframe}`));
+    ws.on('error', (err) => {
+        console.error(`🚨 Lỗi WebSocket ${symbol}/${pair}/${timeframe}: ${err.message}`);
+        setTimeout(() => subscribeBinance(symbol, pair, timeframe), 5000);
+    });
+
     ws.on('close', () => {
-        console.log(`❌ WebSocket ${symbol}/${pair}/${timeframe} đã đóng.`);
+        console.log(`❌ WebSocket ${symbol}/${pair}/${timeframe} bị đóng.`);
         delete wsStreams[streamKey];
         delete activeSubscriptions[streamKey];
-    });
-    ws.on('error', (err) => console.error(`🚨 Lỗi WebSocket ${symbol}/${pair}/${timeframe}:`, err.message));
 
-    wsStreams[streamKey] = ws;
-    activeSubscriptions[streamKey] = 1;
+        wsReconnectAttempts[streamKey]++;
+        if (wsReconnectAttempts[streamKey] < 5) {
+            console.log(`🔄 Đang thử kết nối lại (lần ${wsReconnectAttempts[streamKey]}/5)...`);
+            setTimeout(() => subscribeBinance(symbol, pair, timeframe), 5000);
+        } else {
+            console.error(`🚨 WebSocket ${symbol}/${pair}/${timeframe} bị lỗi quá nhiều lần, dừng kết nối.`);
+        }
+    });
 }
 
+
+// 🔴 Hủy WebSocket khi không còn ai theo dõi
 function unsubscribeBinance(symbol, pair, timeframe) {
     const streamKey = `${symbol.toLowerCase()}_${pair.toLowerCase()}_${timeframe}`;
+
     if (!wsStreams[streamKey]) return;
 
     activeSubscriptions[streamKey] -= 1;
@@ -75,16 +121,105 @@ function unsubscribeBinance(symbol, pair, timeframe) {
         delete activeSubscriptions[streamKey];
     }
 }
-// Khởi động WebSocket
-subscribeBinance('BTC', 'USDT','15m');
-subscribeBinance('ADA', 'USDT','15m');
+
+// 🟢 Lấy dữ liệu API Binance nếu WebSocket bị lỗi
+async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, delay = 5000) {
+    const cacheKey = `${symbol}_${pair}_${timeframe}`;
+    console.log(`🔍 Lấy dữ liệu API Binance cho ${symbol}/${pair} (${timeframe})`);
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const response = await axios.get(`${BINANCE_API}/klines`, {
+                params: { symbol: `${symbol.toUpperCase()}${pair.toUpperCase()}`, interval: timeframe, limit },
+                timeout: 10000,
+            });
+
+            if (!response || !response.data || !Array.isArray(response.data)) {
+                throw new Error('Dữ liệu trả về từ API không hợp lệ');
+            }
+
+            const klines = response.data.map(d => ({
+                timestamp: d[0],
+                open: parseFloat(d[1]),
+                high: parseFloat(d[2]),
+                low: parseFloat(d[3]),
+                close: parseFloat(d[4]),
+                volume: parseFloat(d[5])
+            }));
+
+            if (klines.length === 0) {
+                console.warn(`⚠️ API không có dữ liệu mới.`);
+                return [];
+            }
+
+            console.log(`✅ API Binance trả về ${klines.length} nến mới.`);
+            cacheKlines.set(cacheKey, klines);
+            lastUpdateTime[cacheKey] = Date.now();
+
+            return klines;
+        } catch (error) {
+            console.error(`❌ Lỗi API Binance (${symbol}/${pair}, attempt ${attempt}/${retries}): ${error.message}`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+    return [];
+}
+setInterval(async () => {
+    Object.keys(lastUpdateTime).forEach(async (cacheKey) => {
+        const lastTime = lastUpdateTime[cacheKey] || 0;
+        const timeSinceLastUpdate = Date.now() - lastTime;
+
+        if (timeSinceLastUpdate > 5000) {
+            if (!apiRetryCounter[cacheKey]) apiRetryCounter[cacheKey] = 0;
+            apiRetryCounter[cacheKey]++;
+
+            if (apiRetryCounter[cacheKey] <= 3) {
+                console.warn(`⚠️ Không có dữ liệu từ WebSocket (${cacheKey}) trong 5 giây. Fallback sang API.`);
+                const [symbol, pair, timeframe] = cacheKey.split("_");
+                const data = await fetchKlines(symbol, pair, timeframe, 10);
+
+                if (data && data.length > 0) {
+                    console.log(`✅ API Binance đã trả về dữ liệu mới cho ${cacheKey}`);
+                    apiRetryCounter[cacheKey] = 0;
+                }
+            } else {
+                console.error(`🚨 API Binance bị gọi quá nhiều lần cho ${cacheKey}. Tạm dừng fallback.`);
+            }
+        } else {
+            apiRetryCounter[cacheKey] = 0;
+        }
+    });
+}, 5000);
+
+// Danh sách các cặp mặc định để theo dõi khi bot khởi động
+const DEFAULT_PAIRS = [
+    { symbol: "BTC", pair: "USDT", timeframe: "15m" },
+    { symbol: "ETH", pair: "USDT", timeframe: "15m" }
+];
+
+// Tự động kết nối WebSocket cho các cặp mặc định
+function autoSubscribe() {
+    console.log("🔄 Đang khởi động bot và kết nối WebSocket...");
+
+    DEFAULT_PAIRS.forEach(({ symbol, pair, timeframe }) => {
+        console.log(`📡 Đang kết nối WebSocket ${symbol}/${pair}/${timeframe}`);
+        subscribeBinance(symbol, pair, timeframe);
+    });
+
+    console.log("✅ WebSocket đã được khởi tạo cho các cặp mặc định.");
+}
+
+// Gọi hàm autoSubscribe() khi bot khởi động
+autoSubscribe();
+
+// Xuất các hàm để dùng trong bot
+module.exports = { subscribeBinance, unsubscribeBinance, fetchKlines, cacheKlines };
 
 // =====================
 //     CẤU HÌNH
 // =====================
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7644381153:AAGtd8uhtdPFbDqlpA9NAUSsIsePXQiO36g';
-const BINANCE_API = 'https://api.binance.com/api/v3';
 let adminChatId = null;
 
 const timeframes = {
@@ -797,71 +932,6 @@ const SIGNAL_COOLDOWN = 10 * 60 * 1000;
 const signalBuffer = new Map();
 let apiErrorCounter = 0;
 
-async function fetchKlines(symbol, pair, timeframe, limit = 500, retries = 3, delay = 5000) {
-    const cacheKey = `${symbol}_${pair}_${timeframe}`;
-
-    // Nếu đã có dữ liệu trong cache, ưu tiên lấy từ đó
-    if (cacheKlines.has(cacheKey)) {
-        const candles = cacheKlines.get(cacheKey);
-        if (candles.length >= limit) {
-            return candles.slice(-limit);
-        }
-    }
-
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            const response = await axios.get(`${BINANCE_API}/klines`, {
-                params: { symbol: `${symbol.toUpperCase()}${pair.toUpperCase()}`, interval: timeframe, limit },
-                timeout: 10000,
-            });
-
-            if (!response || !response.data || !Array.isArray(response.data)) {
-                throw new Error('Dữ liệu trả về từ API không hợp lệ');
-            }
-
-            const klines = response.data.map(d => ({
-                timestamp: d[0],
-                open: parseFloat(d[1]),
-                high: parseFloat(d[2]),
-                low: parseFloat(d[3]),
-                close: parseFloat(d[4]),
-                volume: parseFloat(d[5])
-            }));
-
-            // Lọc bỏ dữ liệu lỗi (có giá trị 0 hoặc null)
-            const filteredKlines = klines.filter(k =>
-                k.close > 0 && k.open > 0 && k.high > 0 && k.low > 0 && k.volume >= 0
-            );
-
-            // Lưu vào cache theo cặp giao dịch & khung thời gian
-            cacheKlines.set(cacheKey, filteredKlines);
-
-            console.log(`✅ Lấy ${filteredKlines.length} nến từ API cho ${symbol}/${pair} (${timeframe})`);
-            return filteredKlines;
-        } catch (error) {
-            let errorMessage = error.message;
-            if (error.response) {
-                errorMessage = `HTTP ${error.response.status}: ${JSON.stringify(error.response.data)}`;
-            }
-
-            console.error(`❌ API Error (${symbol}/${pair}, attempt ${attempt}/${retries}): ${errorMessage}`);
-            fs.appendFileSync(BOT_LOG_PATH, `${new Date().toISOString()} - API Error: ${errorMessage}\n`);
-
-            // Nếu lỗi 429 (Rate Limit), tăng thời gian chờ
-            if (error.response && error.response.status === 429) {
-                delay *= 2;
-                console.warn(`⚠️ API Rate Limit - Tăng thời gian chờ lên ${delay}ms`);
-            }
-
-            // Nếu thử hết số lần retry mà vẫn lỗi, trả về null
-            if (attempt === retries) return null;
-
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-    }
-}
-
-
 async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp, timestamp) {
     if (!signal || !['LONG', 'SHORT', 'WAIT'].includes(signal)) {
         console.error(`⚠️ simulateTrade: signal không hợp lệ (${signal}), bỏ qua giả lập.`);
@@ -1326,8 +1396,8 @@ function dynamicTrainingControl() {
     startAutoChecking();
     await simulateRealTimeForConfigs(1000);
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
-    setInterval(() => {
-        console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-        optimizeModel();
-    }, 1 * 60 * 60 * 1000); // 5 giờ
+    // setInterval(() => {
+    //     console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+    //     optimizeModel();
+    // }, 1 * 60 * 60 * 1000); // 5 giờ
 })();
