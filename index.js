@@ -673,7 +673,6 @@ let trainingCounter = 0;
 let shouldStopTraining = false;
 
 async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, symbol, pair, timeframe) {
-    // Validation checks with logging
     if (!historicalSlice || !fullData || shouldStopTraining) {
         console.log("🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng huấn luyện.");
         return;
@@ -687,7 +686,6 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         return;
     }
 
-    // Price and signal calculation
     const currentPrice = historicalSlice[historicalSlice.length - 1].close;
     const futureData = fullData.slice(currentIndex + 1, currentIndex + 11);
     const futurePrice = futureData.length >= 10 ? futureData[futureData.length - 1].close : null;
@@ -701,7 +699,6 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
     if (priceChange > 0.5) trueSignal = [1, 0, 0]; // LONG
     else if (priceChange < -0.5) trueSignal = [0, 1, 0]; // SHORT
 
-    // Feature computation with NaN check
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
         const features = computeFeature(historicalSlice, i, symbol, pair, timeframe);
@@ -712,31 +709,29 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         windowFeatures.push(features);
     }
 
-    // Padding windowFeatures to ensure sequence_length = 5
+    // Đảm bảo `windowFeatures` có đúng `sequence_length = 5`
     while (windowFeatures.length < 5) {
-        windowFeatures.push(windowFeatures[windowFeatures.length - 1]);
+        windowFeatures.push(windowFeatures[windowFeatures.length - 1]); // Lặp lại dữ liệu cuối nếu thiếu
     }
 
-    // Prepare future signals
+    // Đảm bảo `trueSignal` có `sequence_length = 5`
     const futureSignals = new Array(5).fill(trueSignal);
+
     trainingCounter++;
 
     try {
-        // Dynamic batch size based on memory usage
         const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
         const batchSize = usedMemoryMB > 450 ? 8 : 16;
 
-        // Convert to tensors
+        // Chuyển đổi sang tensor đúng định dạng `[batch_size, sequence_length, feature_dim]`
         const xs = tf.tensor3d([windowFeatures], [1, currentConfig.windowSize, 22]);
-        const ys = tf.tensor3d([futureSignals], [1, 5, 3]);
+        const ys = tf.tensor3d([futureSignals], [1, 5, 3]); // Dự đoán chuỗi 5 bước
 
-        // Train the model
         const history = await model.fit(xs, ys, { epochs: 1, batchSize, shuffle: true });
 
         xs.dispose();
         ys.dispose();
 
-        // Update accuracy
         const loss = history.history.loss[0];
         lastAccuracy = 1.0 - loss;
         recentAccuracies.push(lastAccuracy);
@@ -835,30 +830,26 @@ async function simulateConfig(config, stepInterval) {
             lastIndexMap.delete(configKey);
             return;
         }
-
         try {
             const historicalSlice = historicalData.slice(0, currentIndex);
             if (historicalSlice.length < currentConfig.windowSize) {
-                console.warn(`⚠️ Slice không đủ dữ liệu: ${historicalSlice.length}/${currentConfig.windowSize}`);
                 currentIndex++;
                 setTimeout(simulateStep, stepInterval);
                 return;
             }
-
             console.log(`🔄 Giả lập nến ${currentIndex}/${historicalData.length} cho ${symbol}/${pair} (${timeframe})`);
-            const { result } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
+            const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
+            const now = Date.now();
+            if (!shouldStopTraining) await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData, symbol, pair, timeframe);
             console.log(`📈 Kết quả giả lập: ${result.split('\n')[0]}`);
-            if (!shouldStopTraining) {
-                await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData, symbol, pair, timeframe);
-            }
-
             lastIndexMap.set(configKey, currentIndex + 1);
             currentIndex++;
             setTimeout(simulateStep, stepInterval);
         } catch (error) {
-            console.error(`❌ Lỗi giả lập ${symbol}/${pair} tại nến ${currentIndex}: ${error.message}`);
-            setTimeout(simulateStep, 30000); // Thử lại sau 30 giây nếu lỗi
+            console.error(`Lỗi giả lập ${symbol}/${pair}: ${error.message}`);
+            setTimeout(simulateStep, 30000);
         }
+
     }
 
     console.log(`🚀 Bắt đầu giả lập ${symbol}/${pair} (${timeframes[timeframe]}) từ nến ${currentIndex}...`);
