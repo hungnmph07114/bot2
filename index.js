@@ -343,50 +343,35 @@ async function trainModelData(data, symbol, pair, timeframe) {
 }
 
 async function trainModelWithMultiplePairs() {
-    const pairs = [
-        { symbol: 'ADA', pair: 'USDT', timeframe: '15m' },
-    ];
-
+    const pairs = [{ symbol: 'ADA', pair: 'USDT', timeframe: '15m' }];
     for (const { symbol, pair, timeframe } of pairs) {
-        const data = await fetchKlines(symbol, pair, timeframe, 500);
-        if (data) {
-            await trainModelData(data, symbol, pair, timeframe);
-        } else {
-            console.error(`❌ Không thể lấy dữ liệu ${symbol}/${pair} (${timeframe}) để huấn luyện.`);
+        const cacheKey = `${symbol}_${pair}_${timeframe}`;
+        let data = cacheKlines.get(cacheKey) || [];
+        const minCandlesNeeded = currentConfig.windowSize + 5;
+
+        if (!data || data.length < minCandlesNeeded) {
+            console.warn(`⚠️ Không đủ dữ liệu (${data.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
+            subscribeBinance(symbol, pair, timeframe);
+            const maxWaitTime = 10000;
+            const startTime = Date.now();
+            while (Date.now() - startTime < maxWaitTime) {
+                data = cacheKlines.get(cacheKey) || [];
+                if (data.length >= minCandlesNeeded) break;
+                console.log(`⏳ Đợi dữ liệu WebSocket: ${data.length}/${minCandlesNeeded}`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+            if (data.length < minCandlesNeeded) {
+                data = await fetchKlines(symbol, pair, timeframe, 200);
+                if (!data || data.length < minCandlesNeeded) {
+                    console.error(`❌ Không thể lấy đủ dữ liệu ${symbol}/${pair} (${timeframe}).`);
+                    continue;
+                }
+            }
         }
+        await trainModelData(data, symbol, pair, timeframe);
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
 }
-// async function trainModelWithMultiplePairs() {
-//     const pairs = [{ symbol: 'ADA', pair: 'USDT', timeframe: '15m' }];
-//     for (const { symbol, pair, timeframe } of pairs) {
-//         const cacheKey = `${symbol}_${pair}_${timeframe}`;
-//         let data = cacheKlines.get(cacheKey) || [];
-//         const minCandlesNeeded = currentConfig.windowSize + 5;
-//
-//         if (!data || data.length < minCandlesNeeded) {
-//             console.warn(`⚠️ Không đủ dữ liệu (${data.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
-//             subscribeBinance(symbol, pair, timeframe);
-//             const maxWaitTime = 10000;
-//             const startTime = Date.now();
-//             while (Date.now() - startTime < maxWaitTime) {
-//                 data = cacheKlines.get(cacheKey) || [];
-//                 if (data.length >= minCandlesNeeded) break;
-//                 console.log(`⏳ Đợi dữ liệu WebSocket: ${data.length}/${minCandlesNeeded}`);
-//                 await new Promise(resolve => setTimeout(resolve, 1000));
-//             }
-//             if (data.length < minCandlesNeeded) {
-//                 data = await fetchKlines(symbol, pair, timeframe, 500);
-//                 if (!data || data.length < minCandlesNeeded) {
-//                     console.error(`❌ Không thể lấy đủ dữ liệu ${symbol}/${pair} (${timeframe}).`);
-//                     continue;
-//                 }
-//             }
-//         }
-//         await trainModelData(data, symbol, pair, timeframe);
-//         await new Promise(resolve => setTimeout(resolve, 1000));
-//     }
-// }
 
 async function optimizeModel() {
     if (recentAccuracies.length < 50) return;
@@ -436,22 +421,34 @@ async function optimizeModel() {
 
 // CHỈ BÁO KỸ THUẬT
 function computeRSI(close, period = 14) {
-    if (!Array.isArray(close) || close.length < period) return null;
+    if (!Array.isArray(close) || close.length < period || close.some(v => typeof v !== 'number' || isNaN(v))) {
+        console.warn(`⚠️ Dữ liệu không đủ hoặc không hợp lệ để tính RSI (length: ${close?.length || 0}, period: ${period})`);
+        return null;
+    }
     const result = RSI.calculate({ values: close, period });
     return result.length > 0 ? result[result.length - 1] : null;
 }
-
 function computeMA(close, period = 20) {
-    if (!Array.isArray(close) || close.length < period) return null;
+    if (!Array.isArray(close) || close.length < period || close.some(v => typeof v !== 'number' || isNaN(v))) {
+        console.warn(`⚠️ Dữ liệu không đủ hoặc không hợp lệ để tính MA (length: ${close?.length || 0}, period: ${period})`);
+        return null;
+    }
     const ma = SMA.calculate({ values: close, period });
     return ma.length > 0 ? ma[ma.length - 1] : null;
 }
 
 function computeMACD(close) {
-    const minLength = 26 + 9 - 1;
-    if (!Array.isArray(close) || close.length < minLength) return null;
+    const minLength = 26 + 9 - 1; // slowPeriod + signalPeriod - 1
+    if (!Array.isArray(close) || close.length < minLength || close.some(v => typeof v !== 'number' || isNaN(v))) {
+        console.warn(`⚠️ Dữ liệu không đủ hoặc không hợp lệ để tính MACD (length: ${close?.length || 0}, min required: ${minLength})`);
+        return null;
+    }
     const result = MACD.calculate({ values: close, fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 });
-    return result.length > 0 ? [result[result.length - 1].MACD, result[result.length - 1].signal, result[result.length - 1].histogram] : null;
+    return result.length > 0 ? [
+        result[result.length - 1].MACD || 0,
+        result[result.length - 1].signal || 0,
+        result[result.length - 1].histogram || 0
+    ] : null;
 }
 
 function computeBollingerBands(close, period = 20, stdDev = 2) {
@@ -581,7 +578,7 @@ function computeFeature(data, j, symbol, pair, timeframe) {
 async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     const cacheKey = `${symbol}_${pair}_${timeframe}`;
     let df = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
-    const minCandlesNeeded = 500;
+    const minCandlesNeeded = 200;
 
     if (!df || df.length < minCandlesNeeded) {
         console.warn(`⚠️ Không đủ dữ liệu (${df.length}/${minCandlesNeeded}) trong cacheKlines cho ${symbol}/${pair} (${timeframe}).`);
@@ -758,34 +755,79 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
     }
 }
 
+
 // SIMULATION
 let lastIndexMap = new Map();
 const SIGNAL_COOLDOWN = 10 * 60 * 1000;
 const signalBuffer = new Map();
 let apiErrorCounter = 0;
 
+async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp, timestamp) {
+    const cacheKey = `${symbol}_${pair}_${timeframe}`;
+    let data = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
+    const minCandlesNeeded = 50;
+
+    if (!data || data.length < minCandlesNeeded) {
+        subscribeBinance(symbol, pair, timeframe);
+        const maxWaitTime = 5000;
+        const startTime = Date.now();
+        while (Date.now() - startTime < maxWaitTime) {
+            data = cacheKlines.get(cacheKey) || [];
+            if (data.length >= minCandlesNeeded) break;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        if (data.length < minCandlesNeeded) {
+            data = await fetchKlines(symbol, pair, timeframe, minCandlesNeeded);
+            if (!data || data.length < minCandlesNeeded) return { exitPrice: null, profit: null };
+        }
+    }
+
+    let exitPrice = null, profit = null;
+    for (let i = 0; i < data.length; i++) {
+        if (data[i].timestamp <= timestamp) continue;
+        const high = data[i].high, low = data[i].low;
+        if (signal === 'LONG') {
+            if (low <= sl) { exitPrice = sl; profit = ((sl - entryPrice) / entryPrice) * 100; break; }
+            else if (high >= tp) { exitPrice = tp; profit = ((tp - entryPrice) / entryPrice) * 100; break; }
+        } else if (signal === 'SHORT') {
+            if (high >= sl) { exitPrice = sl; profit = ((entryPrice - sl) / entryPrice) * 100; break; }
+            else if (low <= tp) { exitPrice = tp; profit = ((entryPrice - tp) / entryPrice) * 100; break; }
+        }
+    }
+    if (!exitPrice) {
+        exitPrice = data[data.length - 1].close;
+        profit = signal === 'LONG' ? ((exitPrice - entryPrice) / entryPrice) * 100 : ((entryPrice - exitPrice) / entryPrice) * 100;
+    }
+    return { exitPrice, profit };
+}
+
 async function simulateConfig(config, stepInterval) {
     const { chatId, symbol, pair, timeframe } = config;
     const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
+    const cacheKey = `${symbol}_${pair}_${timeframe}`;
 
-    const valid = await isValidMarket(symbol, pair);
-    if (!valid) {
-        console.error(`❌ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không hợp lệ, bỏ qua giả lập.`);
-        return;
-    }
+    let historicalData = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
+    const minCandlesNeeded = 200;
 
-    const historicalData = await fetchKlines(symbol, pair, timeframe);
-    if (!historicalData) {
-        console.error(`❌ Không thể lấy dữ liệu cho ${symbol}/${pair}, bỏ qua giả lập.`);
-        apiErrorCounter++;
-        if (apiErrorCounter >= 3 && adminChatId) {
-            bot.sendMessage(adminChatId, `🚨 *Cảnh báo*: API Binance liên tục thất bại (3 lần liên tiếp). Vui lòng kiểm tra kết nối hoặc rate limit.`, { parse_mode: 'Markdown' });
-            apiErrorCounter = 0;
+    if (!historicalData || historicalData.length < minCandlesNeeded) {
+        console.warn(`⚠️ Không đủ dữ liệu (${historicalData.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
+        subscribeBinance(symbol, pair, timeframe);
+        const maxWaitTime = 10000;
+        const startTime = Date.now();
+        while (Date.now() - startTime < maxWaitTime) {
+            historicalData = cacheKlines.get(cacheKey) || [];
+            if (historicalData.length >= minCandlesNeeded) break;
+            console.log(`⏳ Đợi dữ liệu WebSocket: ${historicalData.length}/${minCandlesNeeded}`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        return;
+        if (historicalData.length < minCandlesNeeded) {
+            historicalData = await fetchKlines(symbol, pair, timeframe, minCandlesNeeded);
+            if (!historicalData || historicalData.length < minCandlesNeeded) {
+                console.error(`❌ Không thể lấy đủ dữ liệu cho ${symbol}/${pair}.`);
+                return;
+            }
+        }
     }
-
-    apiErrorCounter = 0;
 
     let currentIndex = lastIndexMap.has(configKey) ? lastIndexMap.get(configKey) : currentConfig.windowSize;
 
@@ -813,10 +855,10 @@ async function simulateConfig(config, stepInterval) {
             setTimeout(simulateStep, 30000);
         }
     }
-    console.log(`Bắt đầu giả lập ${symbol}/${pair} (${timeframes[timeframe]}) từ nến ${currentIndex}...`);
+
+    console.log(`🚀 Bắt đầu giả lập ${symbol}/${pair} (${timeframes[timeframe]}) từ nến ${currentIndex}...`);
     simulateStep();
 }
-
 
 async function simulateRealTimeForConfigs(stepInterval = 1000) {
     const configs = await loadWatchConfigs();
