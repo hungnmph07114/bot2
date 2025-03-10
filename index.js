@@ -659,17 +659,48 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     const showTechnicalIndicators = await getUserSettings(chatId);
     const details = [];
     if (showTechnicalIndicators) {
-        details.push(`📈 RSI: ${indicators.rsi.toFixed(1)}`);
-        details.push(`🎯 Stochastic %K: ${indicators.stochastic.toFixed(1)}`);
-        details.push(`📊 VWAP: ${indicators.vwap.toFixed(4)}`);
-        details.push(`📦 OBV: ${(indicators.obv / 1e6).toFixed(2)}M`);
+        details.push(`📈 RSI: ${rsi.toFixed(1)}`);
+        details.push(`🎯 Stochastic %K: ${stochasticK.toFixed(1)}`);
+        details.push(`📊 VWAP: ${vwap.toFixed(4)}`);
+        details.push(`📦 OBV: ${(obv / 1e6).toFixed(2)}M`);
+        const isAboveCloud = ichimoku && currentPrice > Math.max(ichimoku.spanA, ichimoku.spanB);
+        const isBelowCloud = ichimoku && currentPrice < Math.min(ichimoku.spanA, ichimoku.spanB);
+        details.push(`☁️ Ichimoku: ${isAboveCloud ? 'Trên đám mây' : isBelowCloud ? 'Dưới đám mây' : 'Trong đám mây'}`);
+        details.push(`📏 Fib Levels: 0.618: ${fibLevels[0.618].toFixed(4)}, 0.5: ${fibLevels[0.5].toFixed(4)}, 0.382: ${fibLevels[0.382].toFixed(4)}`);
     }
-    details.push(`✅ Độ tin cậy: ${confidence}%`);
-    details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
-    details.push(`🛑 SL: ${sl.toFixed(4)}`);
-    details.push(`💰 TP: ${tp.toFixed(4)}`);
-
-    return {
+    details.push(`🛡️ Hỗ trợ: ${support.toFixed(4)}, Kháng cự: ${resistance.toFixed(4)}`);
+    const timestamp = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    details.push(`⏰ Thời gian: ${timestamp}`);
+    if (adx < 20) details.push(`📊 Xu hướng: Đi ngang`);
+    else if (longProb > shortProb) details.push(`📈 Xu hướng: Tăng (dự đoán AI)`);
+    else if (shortProb > longProb) details.push(`📉 Xu hướng: Giảm (dự đoán AI)`);
+    else details.push(`📊 Xu hướng: Không rõ`);
+    if (signalText !== '⚪️ ĐỢI - Chưa có tín hiệu') {
+        let risk, reward, rr;
+        if (signalText.includes('LONG')) {
+            risk = entry - sl;
+            reward = tp - entry;
+        } else {
+            risk = sl - entry;
+            reward = entry - tp;
+        }
+        if (risk > 0) {
+            rr = (reward / risk).toFixed(2);
+            details.push(`⚖️ R:R: ${rr}:1`);
+        } else {
+            details.push(`⚖️ R:R: N/A`);
+        }
+        details.push(`✅ Độ tin cậy: ${confidence}%`);
+        details.push(`🎯 Điểm vào: ${entry.toFixed(4)}`);
+        details.push(`🛑 SL: ${sl.toFixed(4)}`);
+        details.push(`💰 TP: ${tp.toFixed(4)}`);
+        const leverage = signalText === '🟢 LONG - Mua'
+            ? Math.round(longProb * 10)
+            : Math.round(shortProb * 10);
+        const safeLeverage = Math.min(leverage, 125);
+        details.push(`💡 Khuyến nghị đòn bẩy: x${safeLeverage}`);
+    }
+        return {
         result: `📊 *Phân tích ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframe})*\n💰 Giá: ${currentPrice.toFixed(4)}\n⚡️ *${signalText}*\n${details.join('\n')}`,
         confidence,
         signalType,
@@ -1096,7 +1127,7 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
     const lastSignal = signalBuffer.get(configKey);
     const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
 
-    if (confidence < confidenceThreshold) return;
+    if (confidence < confidenceThreshold || signalType !== 'WAIT') return;
 
     const df = await fetchKlines(symbol, pair, timeframe, 50);
     const atr = df ? computeATR(df) : 0.0001;
