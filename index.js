@@ -749,84 +749,34 @@ const SIGNAL_COOLDOWN = 10 * 60 * 1000;
 const signalBuffer = new Map();
 let apiErrorCounter = 0;
 
-async function simulateTrade(symbol, pair, timeframe, signal, entryPrice, sl, tp, timestamp) {
-    const cacheKey = `${symbol}_${pair}_${timeframe}`;
-    let data = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
-    const minCandlesNeeded = 50;
-
-    if (!data || data.length < minCandlesNeeded) {
-        subscribeBinance(symbol, pair, timeframe);
-        const maxWaitTime = 5000;
-        const startTime = Date.now();
-        while (Date.now() - startTime < maxWaitTime) {
-            data = cacheKlines.get(cacheKey) || [];
-            if (data.length >= minCandlesNeeded) break;
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        if (data.length < minCandlesNeeded) {
-            data = await fetchKlines(symbol, pair, timeframe, minCandlesNeeded);
-            if (!data || data.length < minCandlesNeeded) return { exitPrice: null, profit: null };
-        }
-    }
-
-    let exitPrice = null, profit = null;
-    for (let i = 0; i < data.length; i++) {
-        if (data[i].timestamp <= timestamp) continue;
-        const high = data[i].high, low = data[i].low;
-        if (signal === 'LONG') {
-            if (low <= sl) { exitPrice = sl; profit = ((sl - entryPrice) / entryPrice) * 100; break; }
-            else if (high >= tp) { exitPrice = tp; profit = ((tp - entryPrice) / entryPrice) * 100; break; }
-        } else if (signal === 'SHORT') {
-            if (high >= sl) { exitPrice = sl; profit = ((entryPrice - sl) / entryPrice) * 100; break; }
-            else if (low <= tp) { exitPrice = tp; profit = ((entryPrice - tp) / entryPrice) * 100; break; }
-        }
-    }
-    if (!exitPrice) {
-        exitPrice = data[data.length - 1].close;
-        profit = signal === 'LONG' ? ((exitPrice - entryPrice) / entryPrice) * 100 : ((entryPrice - exitPrice) / entryPrice) * 100;
-    }
-    return { exitPrice, profit };
-}
-
 async function simulateConfig(config, stepInterval) {
     const { chatId, symbol, pair, timeframe } = config;
     const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
-    const cacheKey = `${symbol}_${pair}_${timeframe}`;
 
-    let historicalData = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : [];
-    const minCandlesNeeded = 200;
-
-    if (!historicalData || historicalData.length < minCandlesNeeded) {
-        console.warn(`⚠️ Không đủ dữ liệu (${historicalData.length}/${minCandlesNeeded}) cho ${symbol}/${pair} (${timeframe}).`);
-        subscribeBinance(symbol, pair, timeframe);
-        const maxWaitTime = 10000;
-        const startTime = Date.now();
-        while (Date.now() - startTime < maxWaitTime) {
-            historicalData = cacheKlines.get(cacheKey) || [];
-            if (historicalData.length >= minCandlesNeeded) break;
-            console.log(`⏳ Đợi dữ liệu WebSocket: ${historicalData.length}/${minCandlesNeeded}`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-        if (historicalData.length < minCandlesNeeded) {
-            historicalData = await fetchKlines(symbol, pair, timeframe, minCandlesNeeded);
-            if (!historicalData || historicalData.length < minCandlesNeeded) {
-                console.error(`❌ Không thể lấy đủ dữ liệu cho ${symbol}/${pair}.`);
-                return;
-            }
-        }
+    const valid = await isValidMarket(symbol, pair);
+    if (!valid) {
+        console.error(`❌ Cặp ${symbol.toUpperCase()}/${pair.toUpperCase()} không hợp lệ, bỏ qua giả lập.`);
+        return;
     }
+
+    const historicalData = await fetchKlines(symbol, pair, timeframe);
+    if (!historicalData) {
+        console.error(`❌ Không thể lấy dữ liệu cho ${symbol}/${pair}, bỏ qua giả lập.`);
+        apiErrorCounter++;
+        if (apiErrorCounter >= 3 && adminChatId) {
+            bot.sendMessage(adminChatId, `🚨 *Cảnh báo*: API Binance liên tục thất bại (3 lần liên tiếp). Vui lòng kiểm tra kết nối hoặc rate limit.`, { parse_mode: 'Markdown' });
+            apiErrorCounter = 0;
+        }
+        return;
+    }
+
+    apiErrorCounter = 0;
 
     let currentIndex = lastIndexMap.has(configKey) ? lastIndexMap.get(configKey) : currentConfig.windowSize;
 
     async function simulateStep() {
-        historicalData = cacheKlines.get(cacheKey) || historicalData; // Cập nhật dữ liệu từ WebSocket
-        if (currentIndex >= historicalData.length) {
-            console.log(`ℹ️ Đã giả lập hết dữ liệu hiện tại (${currentIndex}/${historicalData.length}). Chờ dữ liệu mới từ WebSocket...`);
-            setTimeout(simulateStep, stepInterval); // Tiếp tục chờ nếu hết dữ liệu
-            return;
-        }
-        if (!enableSimulation) {
-            console.log(`✅ Dừng giả lập ${symbol}/${pair} (${timeframes[timeframe]}) do enableSimulation = false`);
+        if (currentIndex >= historicalData.length || !enableSimulation) {
+            console.log(`✅ Dừng giả lập ${symbol}/${pair} (${timeframes[timeframe]})`);
             lastIndexMap.delete(configKey);
             return;
         }
@@ -837,11 +787,9 @@ async function simulateConfig(config, stepInterval) {
                 setTimeout(simulateStep, stepInterval);
                 return;
             }
-            console.log(`🔄 Giả lập nến ${currentIndex}/${historicalData.length} cho ${symbol}/${pair} (${timeframe})`);
             const { result, confidence, signalType, signalText, entryPrice, sl, tp } = await getCryptoAnalysis(symbol, pair, timeframe, chatId);
             const now = Date.now();
             if (!shouldStopTraining) await selfEvaluateAndTrain(historicalSlice, currentIndex, historicalData, symbol, pair, timeframe);
-            console.log(`📈 Kết quả giả lập: ${result.split('\n')[0]}`);
             lastIndexMap.set(configKey, currentIndex + 1);
             currentIndex++;
             setTimeout(simulateStep, stepInterval);
@@ -849,12 +797,11 @@ async function simulateConfig(config, stepInterval) {
             console.error(`Lỗi giả lập ${symbol}/${pair}: ${error.message}`);
             setTimeout(simulateStep, 30000);
         }
-
     }
-
-    console.log(`🚀 Bắt đầu giả lập ${symbol}/${pair} (${timeframes[timeframe]}) từ nến ${currentIndex}...`);
+    console.log(`Bắt đầu giả lập ${symbol}/${pair} (${timeframes[timeframe]}) từ nến ${currentIndex}...`);
     simulateStep();
 }
+
 
 async function simulateRealTimeForConfigs(stepInterval = 1000) {
     const configs = await loadWatchConfigs();
