@@ -766,17 +766,17 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     let signalText = '⚪️ ĐỢI - Chưa có tín hiệu';
     let confidence = Math.round(Math.max(longProb, shortProb, waitProb) * 100);
     let entry = currentPrice, sl = 0, tp = 0;
-
+    const fibLevels = computeFibonacciLevels(df) || {};
     if (longProb > shortProb) {
         signalType = 'LONG';
         signalText = '🟢 LONG - Mua';
-        sl = Math.max(currentPrice - Math.max(indicators.atr * 0.5, indicators.atr * 0.3), support);
-        tp = Math.min(currentPrice + Math.max(indicators.atr, indicators.atr * 1.2), resistance);
+        sl = Math.max(currentPrice - Math.max(indicators.atr * 1.5, indicators.atr * 1.0), support); // Tăng khoảng cách ATR
+        tp = Math.min(currentPrice + Math.max(indicators.atr * 2.0, indicators.atr * 1.5), resistance); // Tăng khoảng cách ATR
     } else if (shortProb > longProb) {
         signalType = 'SHORT';
         signalText = '🔴 SHORT - Bán';
-        sl = Math.min(currentPrice + Math.max(indicators.atr * 0.5, indicators.atr * 0.3), resistance);
-        tp = Math.max(currentPrice - Math.max(indicators.atr, indicators.atr * 1.2), support);
+        sl = Math.min(currentPrice + Math.max(indicators.atr * 1.5, indicators.atr * 1.0), resistance); // Tăng khoảng cách ATR
+        tp = Math.max(currentPrice - Math.max(indicators.atr * 2.0, indicators.atr * 1.5), support); // Tăng khoảng cách ATR
     } else {
         confidence = Math.min(confidence, 50);
     }
