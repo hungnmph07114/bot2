@@ -701,7 +701,12 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     let df = cacheKlines.has(cacheKey) ? cacheKlines.get(cacheKey) : await fetchKlines(symbol, pair, timeframe);
 
     if (!df || df.length < currentConfig.windowSize) {
-        return { result: '❗ Không đủ dữ liệu để dự đoán', confidence: 0 };
+        console.warn(`⚠️ Không đủ dữ liệu trong cacheKlines cho ${symbol}/${pair} (${timeframe}). Đang lấy từ API Binance...`);
+        df = await fetchKlines(symbol, pair, timeframe);
+
+        if (!df || df.length < currentConfig.windowSize) {
+            return { result: '❗ Không đủ dữ liệu để dự đoán', confidence: 0 };
+        }
     }
 
     const windowFeatures = df.slice(-currentConfig.windowSize).map((_, i) => {
@@ -710,8 +715,14 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     });
 
     if (windowFeatures.length < 5) {
-        return { result: '❗ Không đủ dữ liệu hợp lệ', confidence: 0 };
+        console.warn(`⚠️ Không đủ dữ liệu hợp lệ cho ${symbol}/${pair} (${timeframe}). Đang fallback sang API Binance...`);
+        df = await fetchKlines(symbol, pair, timeframe);
+
+        if (!df || df.length < currentConfig.windowSize) {
+            return { result: '❗ Không đủ dữ liệu hợp lệ', confidence: 0 };
+        }
     }
+
 
     const currentPrice = df[df.length - 1].close;
     const closePrices = df.map(d => d.close);
@@ -735,8 +746,7 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
     const [macd, signal, histogram] = indicators.macd;
     const [upperBB, middleBB, lowerBB] = indicators.bollinger;
     const { support = currentPrice - indicators.atr * 2, resistance = currentPrice + indicators.atr * 2 } = indicators.supportRes;
-
-    const input = tf.tensor3d([windowFeatures], [1, 5, 22]);
+    const input = tf.tensor3d([windowFeatures], [1, currentConfig.windowSize, 22]);
     const prediction = model.predict(input);
     const predictions = prediction.arraySync()[0];
     input.dispose();
@@ -771,7 +781,20 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId, customThreshol
         confidence = Math.min(confidence, 50);
     }
 
-    if (indicators.adx < 20) confidence = Math.min(confidence, 50);
+    if (indicators.adx < 20) {
+        confidence = Math.min(confidence, 50);
+
+        // Nếu RSI trung lập (45-55), tín hiệu càng kém tin cậy hơn
+        if (indicators.rsi >= 45 && indicators.rsi <= 55) {
+            confidence = Math.min(confidence, 40);
+        }
+
+        // Nếu Bollinger Bands co hẹp (upperBB - lowerBB < 1.5% giá), giảm độ tin cậy xuống 35%
+        const volatility = (indicators.bollinger[0] - indicators.bollinger[2]) / currentPrice;
+        if (volatility < 0.015) {
+            confidence = Math.min(confidence, 35);
+        }
+    }
 
     // Kiểm tra cài đặt của người dùng (hiện chỉ báo kỹ thuật hay không)
     const showTechnicalIndicators = await getUserSettings(chatId);
@@ -1387,8 +1410,8 @@ function dynamicTrainingControl() {
     startAutoChecking();
     await simulateRealTimeForConfigs(1000);
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
-    // setInterval(() => {
-    //     console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-    //     optimizeModel();
-    // }, 1 * 60 * 60 * 1000); // 5 giờ
+    setInterval(() => {
+        console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+        optimizeModel();
+    }, 1 * 60 * 60 * 1000); //  giờ
 })();
