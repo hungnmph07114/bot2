@@ -363,7 +363,7 @@ async function trainModelData(data, symbol, pair, timeframe) {
         if (inputs.length === 0) return;
 
         // Đảm bảo shape [batch_size, sequence_length, feature_dim]
-        const xs = tf.tensor3d(inputs, [inputs.length, 5, 22]);
+        const xs = tf.tensor3d(inputs, [inputs.length, currentConfig.windowSize, 22]);
         const ys = tf.tensor3d(outputs, [outputs.length, 5, 3]); // Đảm bảo có shape `[batch_size, 5, 3]`
 
         await model.fit(xs, ys, { epochs: currentConfig.epochs, batchSize: 32, shuffle: true });
@@ -739,7 +739,7 @@ async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, sym
         const batchSize = usedMemoryMB > 450 ? 8 : 16;
 
         // Chuyển đổi sang tensor đúng định dạng `[batch_size, sequence_length, feature_dim]`
-        const xs = tf.tensor3d([windowFeatures], [1, 5, 22]);
+        const xs = tf.tensor3d([windowFeatures], [1, currentConfig.windowSize, 22]);
         const ys = tf.tensor3d([futureSignals], [1, 5, 3]); // Dự đoán chuỗi 5 bước
 
         const history = await model.fit(xs, ys, { epochs: 1, batchSize, shuffle: true });
@@ -1037,6 +1037,8 @@ bot.onText(/\/tinhieu (.+)/, async (msg, match) => {
             });
             bot.sendMessage(msg.chat.id, `✅ Đã bật theo dõi ${symbol.toUpperCase()}/${pair.toUpperCase()} (${timeframes[timeframe]})`);
             subscribeBinance(symbol, pair,timeframe);
+            const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
+            if (!lastIndexMap.has(configKey)) simulateConfig({ chatId, symbol, pair, timeframe }, 1000);
         } else {
             bot.sendMessage(msg.chat.id, 'ℹ️ Bạn đã theo dõi cặp này rồi!');
         }
