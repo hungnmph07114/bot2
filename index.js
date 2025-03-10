@@ -191,21 +191,13 @@ setInterval(async () => {
     });
 }, 5000);
 
-// Danh sách các cặp mặc định để theo dõi khi bot khởi động
-const DEFAULT_PAIRS = [
-    { symbol: "BTC", pair: "USDT", timeframe: "15m" },
-    { symbol: "ETH", pair: "USDT", timeframe: "15m" }
-];
 
 // Tự động kết nối WebSocket cho các cặp mặc định
 function autoSubscribe() {
     console.log("🔄 Đang khởi động bot và kết nối WebSocket...");
-
-    DEFAULT_PAIRS.forEach(({ symbol, pair, timeframe }) => {
-        console.log(`📡 Đang kết nối WebSocket ${symbol}/${pair}/${timeframe}`);
-        subscribeBinance(symbol, pair, timeframe);
-    });
-
+    
+        subscribeBinance("ADA", "USDT", "15m");
+        
     console.log("✅ WebSocket đã được khởi tạo cho các cặp mặc định.");
 }
 
