@@ -169,7 +169,7 @@ setInterval(async () => {
 // Tự động kết nối WebSocket
 function autoSubscribe() {
     console.log("🔄 Đang khởi động bot và kết nối WebSocket...");
-    const defaultPair = { symbol: 'ADA', pair: 'USDT', timeframe: '15m' };
+    const defaultPair = { symbol: 'ada', pair: 'usdt', timeframe: '15m' };
     subscribeBinance(defaultPair.symbol, defaultPair.pair, defaultPair.timeframe);
     console.log("✅ WebSocket đã được khởi tạo cho cặp mặc định ADA/USDT (15m).");
 }
@@ -177,7 +177,7 @@ function autoSubscribe() {
 autoSubscribe();
 
 // CẤU HÌNH BOT
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7644381153:AAGtd8uhtdPFbDqlpA9NAUSsIsePXQiO36g';
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7605131321:AAGCW_FWEqBC7xMOt8RwL4nek4vqxPBVluY';
 let adminChatId = null;
 
 const timeframes = {
@@ -644,20 +644,24 @@ async function getCryptoAnalysis(symbol, pair, timeframe, chatId) {
     let signalType = 'WAIT', signalText = '⚪️ ĐỢI - Chưa có tín hiệu', confidence = Math.round(Math.max(longProb, shortProb, waitProb) * 100);
     let entry = currentPrice, sl = 0, tp = 0;
 
-    if (longProb > shortProb && longProb > waitProb) {
+// Xác định tín hiệu dựa trên AI và điều chỉnh theo chỉ báo
+    if (longProb > shortProb && longProb > waitProb && longProb > 0.5) {
         signalType = 'LONG';
         signalText = '🟢 LONG - Mua';
-        sl = Math.max(currentPrice - indicators.atr * 1.5, indicators.supportRes.support);
-        tp = Math.min(currentPrice + indicators.atr * 2.0, indicators.supportRes.resistance);
-    } else if (shortProb > longProb && shortProb > waitProb) {
+        sl = Math.max(currentPrice - indicators.atr * (indicators.adx < 20 ? 1.0 : 1.5), indicators.supportRes.support);
+        tp = Math.min(currentPrice + indicators.atr * (indicators.adx < 20 ? 1.5 : 2.0), indicators.supportRes.resistance);
+    } else if (shortProb > longProb && shortProb > waitProb && shortProb > 0.5) {
         signalType = 'SHORT';
         signalText = '🔴 SHORT - Bán';
-        sl = Math.min(currentPrice + indicators.atr * 1.5, indicators.supportRes.resistance);
-        tp = Math.max(currentPrice - indicators.atr * 2.0, indicators.supportRes.support);
+        sl = Math.min(currentPrice + indicators.atr * (indicators.adx < 20 ? 1.0 : 1.5), indicators.supportRes.resistance);
+        tp = Math.max(currentPrice - indicators.atr * (indicators.adx < 20 ? 1.5 : 2.0), indicators.supportRes.support);
     }
 
-    if (indicators.adx < 20) confidence = Math.min(confidence, 50);
-
+    // Điều chỉnh độ tin cậy dựa trên chỉ báo
+    let adjustedConfidence = confidence;
+    if (indicators.adx < 20) adjustedConfidence = Math.min(adjustedConfidence, 60); // Xu hướng yếu
+    if (indicators.rsi > 70 && signalType === 'LONG') adjustedConfidence *= 0.8; // Quá mua
+    if (indicators.rsi < 30 && signalType === 'SHORT') adjustedConfidence *= 0.8; // Quá bán
     const showTechnicalIndicators = await getUserSettings(chatId);
     const details = [];
     if (showTechnicalIndicators) {
@@ -720,76 +724,88 @@ let trainingCounter = 0;
 let shouldStopTraining = false;
 
 async function selfEvaluateAndTrain(historicalSlice, currentIndex, fullData, symbol, pair, timeframe) {
+    // Kiểm tra điều kiện đầu vào
+    if (!model) {
+        console.error('❌ Mô hình chưa được khởi tạo.');
+        return;
+    }
     if (!historicalSlice || !fullData || shouldStopTraining) {
-        console.log("🚫 Không thể huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng huấn luyện.");
+        console.log('🚫 Dừng huấn luyện: Dữ liệu không hợp lệ hoặc đã dừng.');
         return;
     }
     if (historicalSlice.length < currentConfig.windowSize) {
-        console.log(`🚫 Không thể huấn luyện: Dữ liệu (${historicalSlice.length}) nhỏ hơn windowSize (${currentConfig.windowSize}).`);
+        console.log(`🚫 Dữ liệu (${historicalSlice.length}) nhỏ hơn windowSize (${currentConfig.windowSize}).`);
         return;
     }
-    if (currentIndex + 11 > fullData.length) {
-        console.log(`🚫 Không thể huấn luyện: Không đủ dữ liệu tương lai.`);
+    if (currentIndex + 10 > fullData.length) {
+        console.log(`🚫 Không đủ dữ liệu tương lai (${fullData.length - currentIndex} nến còn lại).`);
         return;
     }
 
+    // Lấy giá hiện tại và tương lai
     const currentPrice = historicalSlice[historicalSlice.length - 1].close;
-    const futureData = fullData.slice(currentIndex + 1, currentIndex + 11);
-    const futurePrice = futureData.length >= 10 ? futureData[futureData.length - 1].close : null;
-    if (!futurePrice) {
-        console.log("🚫 Không thể huấn luyện: Không có dữ liệu giá tương lai.");
+    const futureData = fullData.slice(currentIndex + 1, currentIndex + 11); // 10 nến tương lai
+    const futurePrice = futureData[futureData.length - 1].close;
+    if (typeof currentPrice !== 'number' || typeof futurePrice !== 'number') {
+        console.log('🚫 Giá hiện tại hoặc tương lai không hợp lệ.');
         return;
     }
 
+    // Tính toán tín hiệu thực tế dựa trên ATR
+    const atr = computeATR(historicalSlice.slice(-14)) || 0.0001;
     const priceChange = ((futurePrice - currentPrice) / currentPrice) * 100;
-    let trueSignal = [0, 0, 1]; // WAIT
-    if (priceChange > 0.5) trueSignal = [1, 0, 0]; // LONG
-    else if (priceChange < -0.5) trueSignal = [0, 1, 0]; // SHORT
+    const threshold = atr * 100; // Ngưỡng thay đổi giá dựa trên ATR
+    let trueSignal;
+    if (priceChange > threshold) trueSignal = [1, 0, 0]; // LONG
+    else if (priceChange < -threshold) trueSignal = [0, 1, 0]; // SHORT
+    else trueSignal = [0, 0, 1]; // WAIT
 
+    // Tính toán đặc trưng
     const windowFeatures = [];
     for (let i = historicalSlice.length - currentConfig.windowSize; i < historicalSlice.length; i++) {
         const features = computeFeature(historicalSlice, i, symbol, pair, timeframe);
-        if (features.some(f => isNaN(f))) {
-            console.warn(`⚠️ Bỏ qua nến ${i} do dữ liệu chứa NaN.`);
+        if (!features || features.some(f => isNaN(f))) {
+            console.warn(`⚠️ Bỏ qua nến ${i} do dữ liệu không hợp lệ.`);
             return;
         }
         windowFeatures.push(features);
     }
 
-    // Đảm bảo `windowFeatures` có đúng `sequence_length = 5`
-    while (windowFeatures.length < 5) {
-        windowFeatures.push(windowFeatures[windowFeatures.length - 1]); // Lặp lại dữ liệu cuối nếu thiếu
-    }
-
-    // Đảm bảo `trueSignal` có `sequence_length = 5`
-    const futureSignals = new Array(5).fill(trueSignal);
-
+    // Chuẩn bị dữ liệu huấn luyện
+    const futureSignals = Array(5).fill(trueSignal); // Chuỗi 5 bước với tín hiệu giống nhau
     trainingCounter++;
 
     try {
         const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
         const batchSize = usedMemoryMB > 450 ? 8 : 16;
 
-        // Chuyển đổi sang tensor đúng định dạng `[batch_size, sequence_length, feature_dim]`
+        // Tạo tensor với kích thước đúng
         const xs = tf.tensor3d([windowFeatures], [1, currentConfig.windowSize, 22]);
-        const ys = tf.tensor3d([futureSignals], [1, 5, 3]); // Dự đoán chuỗi 5 bước
+        const ys = tf.tensor3d([futureSignals], [1, 5, 3]);
 
-        const history = await model.fit(xs, ys, { epochs: 1, batchSize, shuffle: true });
+        // Huấn luyện mô hình
+        const history = await model.fit(xs, ys, {
+            epochs: 1,
+            batchSize,
+            shuffle: true
+        });
 
-        xs.dispose();
-        ys.dispose();
-
+        // Lấy độ chính xác thực tế từ metrics nếu có
         const loss = history.history.loss[0];
-        lastAccuracy = 1.0 - loss;
-        recentAccuracies.push(lastAccuracy);
+        const accuracy = history.history.accuracy ? history.history.accuracy[0] : 1.0 - loss; // Fallback nếu không có accuracy
+        lastAccuracy = accuracy;
+        recentAccuracies.push(accuracy);
         if (recentAccuracies.length > 50) recentAccuracies.shift();
 
-        console.log(`✅ Huấn luyện tại nến ${currentIndex} | RAM: ${usedMemoryMB.toFixed(2)} MB | Loss: ${loss.toFixed(4)} | Accuracy: ${(lastAccuracy * 100).toFixed(2)}%`);
+        console.log(`✅ Huấn luyện tại nến ${currentIndex} | RAM: ${usedMemoryMB.toFixed(2)} MB | Loss: ${loss.toFixed(4)} | Accuracy: ${(accuracy * 100).toFixed(2)}%`);
+
+        // Giải phóng bộ nhớ
+        xs.dispose();
+        ys.dispose();
     } catch (error) {
-        console.error(`❌ Lỗi huấn luyện: ${error.message}`);
+        console.error(`❌ Lỗi huấn luyện tại nến ${currentIndex}: ${error.message}`);
     }
 }
-
 
 // SIMULATION
 let lastIndexMap = new Map();
@@ -1124,6 +1140,7 @@ bot.onText(/\/resettraining/, (msg) => {
 });
 
 
+// Kiểm tra tín hiệu tự động
 async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceThreshold = 70) {
     const configKey = `${chatId}_${symbol}_${pair}_${timeframe}`;
     const now = Date.now();
@@ -1157,27 +1174,6 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
         return;
     }
 
-    // Kiểm tra và xử lý giá trị null
-    const safeChatId = chatId ?? 0; // Không bao giờ null, nhưng thêm để chắc chắn
-    const safeSymbol = symbol ?? 'UNKNOWN';
-    const safePair = pair ?? 'UNKNOWN';
-    const safeTimeframe = timeframe ?? 'UNKNOWN';
-    const safeSignal = signalType ?? 'UNKNOWN';
-    const safeConfidence = confidence ?? 0;
-    const safeTimestamp = now ?? Date.now();
-    const safeEntryPrice = entryPrice ?? 0;
-    const safeExitPrice = rawExitPrice ?? null; // Để null nếu không có giá thoát
-    const safeProfit = rawProfit ?? null; // Để null nếu không có lợi nhuận
-
-    // Kiểm tra các giá trị không được null
-    if (!safeChatId || !safeSymbol || !safePair || !safeTimeframe || !safeSignal || safeConfidence === null || safeTimestamp === null || safeEntryPrice === null) {
-        console.error(`❌ Dữ liệu không hợp lệ khi lưu tín hiệu ${safeSymbol}/${safePair}: `, {
-            chatId: safeChatId, symbol: safeSymbol, pair: safePair, timeframe: safeTimeframe, signal: safeSignal,
-            confidence: safeConfidence, timestamp: safeTimestamp, entryPrice: safeEntryPrice
-        });
-        return
-    }
-
     db.run(
         `INSERT INTO signal_history (chatId, symbol, pair, timeframe, signal, confidence, timestamp, entry_price, exit_price, profit)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1191,7 +1187,6 @@ async function checkAutoSignal(chatId, { symbol, pair, timeframe }, confidenceTh
             }
         }
     );
-
 }
 function startAutoChecking() {
     const CHECK_INTERVAL = 1 * 60 * 1000;
@@ -1243,8 +1238,8 @@ function dynamicTrainingControl() {
     startAutoChecking();
     await simulateRealTimeForConfigs(1000);
     setInterval(dynamicTrainingControl, 10 * 60 * 1000);
-    setInterval(() => {
-        console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
-        optimizeModel();
-    }, 1 * 60 * 60 * 1000); //  giờ
+    // setInterval(() => {
+    //     console.log("⏳ Đang kiểm tra và tối ưu mô hình...");
+    //     optimizeModel();
+    // }, 3 * 60 * 60 * 1000); //  giờ
 })();
